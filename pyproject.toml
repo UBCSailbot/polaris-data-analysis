@@ -6,15 +6,25 @@ build-backend = "setuptools.build_meta"
 name = "polaris-can-analysis"
 version = "0.1.0"
 description = "Parser and visualization tools for POLARIS CAN dump CSV logs."
-readme = "CAN_ANALYSIS_README.md"
+readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.24",
     "matplotlib>=3.7",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "black>=24.0",
+]
+
 [project.scripts]
-polaris-can-analyze = "analyze_can_frames:main"
+polaris-can-analyze = "polaris_can_analysis.cli:main"
 
 [tool.setuptools]
+packages = ["polaris_can_analysis"]
 py-modules = ["analyze_can_frames"]
+
+[tool.black]
+line-length = 90
+target-version = ["py310"]

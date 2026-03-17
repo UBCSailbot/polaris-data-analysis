@@ -1,8 +1,9 @@
 # POLARIS CAN Analysis Tool
 
-This repo now includes a basic parser + visualization script for CAN dumps:
+This repo now includes parser + visualization tooling for CAN dumps:
 
-- Script: `analyze_can_frames.py`
+- CLI entrypoint: `analyze_can_frames.py` (wrapper)
+- Package modules: `polaris_can_analysis/`
 - Input CSV format: `Timestamp,Elapsed_Time_s,CAN_Message`
 - Example input file: `data/candump_20260315_153322.csv`
 
@@ -39,13 +40,17 @@ By default the script writes to `outputs/`:
 
 - `parsed_frames.csv`: one row per frame, including CAN ID, DLC, payload bytes, and parse warnings.
 - `decoded_signals.csv`: one row per decoded signal value.
-- `physical_dashboard.png`: physical/navigation focused panels.
-- `electrical_dashboard.png`: electrical/power focused panels.
-- `sensor_dashboard.png`: wind + data sensor focused panels.
+- `full/physical_dashboard.png`: full physical/navigation dashboard.
+- `full/electrical_dashboard.png`: full electrical/power dashboard.
+- `full/sensor_dashboard.png`: full wind + data sensor dashboard.
+- `on_water/physical_dashboard.png`: on-water-only physical/navigation dashboard.
+- `on_water/electrical_dashboard.png`: on-water-only electrical/power dashboard.
+- `on_water/sensor_dashboard.png`: on-water-only wind + data sensor dashboard.
 
 ### Dashboard Configuration
 
-Dashboard grouping is controlled in `analyze_can_frames.py` via `DASHBOARD_CONFIG`.
+Dashboard grouping is controlled in `polaris_can_analysis/config.py` via
+`DASHBOARD_CONFIG`.
 
 - Keys are output PNG names.
 - `title` sets the figure title.
@@ -63,3 +68,15 @@ Edit this map to quickly choose which graphs appear on which PNG.
 - Debug: `0x204`, `0x206`
 
 Unknown/undocumented IDs are still kept in `parsed_frames.csv` so nothing is discarded.
+
+## Formatting
+
+Black formatting is configured via `pyproject.toml` with a max line length of 90.
+For VS Code users, `.vscode/settings.json` enables format-on-save using the Black
+extension.
+
+Install formatting tooling with:
+
+```bash
+pip install -e ".[dev]"
+```
