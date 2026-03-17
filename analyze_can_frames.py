@@ -592,6 +592,32 @@ def filter_decoded_rows_by_start(
     return filtered
 
 
+def break_wrapped_angle_series(
+    xs: np.ndarray,
+    ys: np.ndarray,
+    wrap_deg: float = 360.0,
+    break_threshold_deg: Optional[float] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Insert NaN breaks so lines don't connect across angular wrap transitions."""
+    if len(xs) <= 1:
+        return xs, ys
+
+    threshold = (wrap_deg * 0.5) if break_threshold_deg is None else float(break_threshold_deg)
+    out_x: List[float] = [float(xs[0])]
+    out_y: List[float] = [float(ys[0])]
+
+    for i in range(1, len(xs)):
+        prev = float(ys[i - 1])
+        curr = float(ys[i])
+        if math.isfinite(prev) and math.isfinite(curr) and abs(curr - prev) > threshold:
+            out_x.append(float("nan"))
+            out_y.append(float("nan"))
+        out_x.append(float(xs[i]))
+        out_y.append(curr)
+
+    return np.array(out_x, dtype=float), np.array(out_y, dtype=float)
+
+
 def estimate_canfd_frame_time_s(
     payload_bytes: int,
     nominal_bitrate_bps: float = CAN_NOMINAL_BITRATE_BPS,
@@ -1041,17 +1067,19 @@ def draw_wind_angle_split_panel(
     fig: plt.Figure, ax: plt.Axes, frames: List[ParsedFrame], decoded_rows: List[Dict[str, object]]
 ) -> None:
     del fig, frames
-    style_axis(ax, "Wind Angle (0x040 vs 0x041)")
+    style_axis(ax, "Wind Angle")
 
     x_040, y_040 = signal_series(decoded_rows, "wind_angle_deg", "040")
     x_041, y_041 = signal_series(decoded_rows, "wind_angle_deg", "041")
 
     has_data = False
     if len(x_040) > 0:
-        ax.plot(x_040, y_040, color="#22D3EE", linewidth=1.4, label="0x040 Angle")
+        x_040_plot, y_040_plot = break_wrapped_angle_series(x_040, y_040, wrap_deg=360.0)
+        ax.plot(x_040_plot, y_040_plot, color="#22D3EE", linewidth=1.4, label="Sail Wind Sensor")
         has_data = True
     if len(x_041) > 0:
-        ax.plot(x_041, y_041, color="#F59E0B", linewidth=1.4, label="0x041 Angle")
+        x_041_plot, y_041_plot = break_wrapped_angle_series(x_041, y_041, wrap_deg=360.0)
+        ax.plot(x_041_plot, y_041_plot, color="#F59E0B", linewidth=1.4, label="Hull Wind Sensor")
         has_data = True
 
     if not has_data:
@@ -1067,17 +1095,17 @@ def draw_wind_speed_split_panel(
     fig: plt.Figure, ax: plt.Axes, frames: List[ParsedFrame], decoded_rows: List[Dict[str, object]]
 ) -> None:
     del fig, frames
-    style_axis(ax, "Wind Speed (0x040 vs 0x041)")
+    style_axis(ax, "Wind Speed")
 
     x_040, y_040 = signal_series(decoded_rows, "wind_speed_knots", "040")
     x_041, y_041 = signal_series(decoded_rows, "wind_speed_knots", "041")
 
     has_data = False
     if len(x_040) > 0:
-        ax.plot(x_040, y_040, color="#22D3EE", linewidth=1.4, label="0x040 Speed")
+        ax.plot(x_040, y_040, color="#22D3EE", linewidth=1.4, label="Sail Wind Sensor")
         has_data = True
     if len(x_041) > 0:
-        ax.plot(x_041, y_041, color="#F59E0B", linewidth=1.4, label="0x041 Speed")
+        ax.plot(x_041, y_041, color="#F59E0B", linewidth=1.4, label="Hull Wind Sensor")
         has_data = True
 
     if not has_data:
@@ -1409,7 +1437,7 @@ def draw_sensor_temp_panel(
     if len(x_temp) == 0:
         annotate_no_data(ax)
         return
-    ax.plot(x_temp, y_temp, color="#F59E0B", linewidth=1.5, label="Temperature (C)")
+    ax.plot(x_temp, y_temp, color="#F59E0B", linewidth=1.5, label="Temperature")
     ax.set_xlabel("Elapsed Time (s)")
     ax.set_ylabel("Temperature (C)")
     ax.legend(facecolor="#111827", edgecolor="#374151", labelcolor="#D1D5DB", loc="upper right")
@@ -1446,7 +1474,7 @@ def draw_sensor_cond_panel(
         color="#34D399",
         linewidth=1.5,
         alpha=0.95,
-        label="Raw conductivity",
+        label="Conductivity",
     )
     ax.set_xlabel("Elapsed Time (s)")
     ax.set_ylabel("Conductivity (uS/cm)")
@@ -1652,6 +1680,9 @@ def main() -> None:
 
     dashboard_paths: List[Path] = []
     if not args.skip_plot:
+        full_dashboard_dir = args.outdir / "full"
+        on_water_dashboard_dir = args.outdir / "on_water"
+
         full_subtitle_extra = ""
         on_water_frames: List[ParsedFrame] = []
         on_water_decoded_rows: List[Dict[str, object]] = []
@@ -1668,7 +1699,7 @@ def main() -> None:
             title = str(cfg.get("title", "POLARIS CAN Dashboard"))
             panels_raw = cfg.get("panels", [])
             panels = [str(item) for item in panels_raw] if isinstance(panels_raw, list) else []
-            output_path = args.outdir / output_name
+            output_path = full_dashboard_dir / output_name
             create_dashboard(
                 frames,
                 decoded_rows,
@@ -1684,7 +1715,7 @@ def main() -> None:
             dashboard_paths.append(output_path)
 
             if on_water_start_s is not None and len(on_water_frames) > 0:
-                on_water_output_path = args.outdir / f"{Path(output_name).stem}_on_water.png"
+                on_water_output_path = on_water_dashboard_dir / output_name
                 create_dashboard(
                     on_water_frames,
                     on_water_decoded_rows,
@@ -1694,7 +1725,7 @@ def main() -> None:
                     panels=panels,
                     on_water_start_s=None,
                     show_on_water_marker=False,
-                    subtitle_extra=f"Window: elapsed >= {on_water_start_s:.0f}s",
+                    subtitle_extra=f"On-water Start: {on_water_start_s:.0f}s",
                     time_margin_frac=0.0,
                 )
                 dashboard_paths.append(on_water_output_path)
