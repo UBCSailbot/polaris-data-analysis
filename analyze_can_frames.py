@@ -32,6 +32,7 @@ if "MPLCONFIGDIR" not in os.environ:
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.collections import LineCollection
 from matplotlib.ticker import FuncFormatter
 
 
@@ -64,6 +65,7 @@ FRAME_NAMES: Dict[str, str] = {
 
 EARTH_RADIUS_KM = 6371.0088
 AIS_NEARBY_THRESHOLD_DEG = 0.1
+AIS_TRACK_CONNECT_MAX_JUMP_KM = 0.3
 GEO_MARGIN_FRAC = 0.05
 GEO_HORIZONTAL_PAD_FRAC = 0.10
 CAN_NOMINAL_BITRATE_BPS = 500_000.0
@@ -71,6 +73,10 @@ CAN_DATA_BITRATE_BPS = 1_000_000.0
 UTILIZATION_WINDOW_S = 0.5
 CANFD_STUFFING_FACTOR = 1.15
 UTILIZATION_MAX_WINDOW_S = 5.0
+CONDUCTIVITY_FILTER_WINDOW = 60
+ON_WATER_STEADY_TOP_QUANTILE = 0.95
+ON_WATER_THRESHOLD_FRAC = 0.90
+ON_WATER_MIN_CONSECUTIVE = 3
 SUBPLOT_HSPACE = 0.22
 SUBPLOT_WSPACE = 0.16
 
@@ -120,6 +126,13 @@ class ParsedFrame:
     data: List[int]
     raw_message: str
     parse_warning: str = ""
+
+
+@dataclass
+class OnWaterDetection:
+    start_s: Optional[float]
+    steady_state_us_cm: Optional[float]
+    threshold_us_cm: Optional[float]
 
 
 def le_u16(data: List[int], offset: int) -> int:
@@ -513,6 +526,72 @@ def robust_rolling_mean(ys: np.ndarray, window: int = 5, outlier_sigma: float = 
     return filtered
 
 
+def conductivity_series(
+    decoded_rows: Iterable[Dict[str, object]],
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return conductivity raw + filtered series."""
+    x_cond, y_cond = signal_series(decoded_rows, "conductivity_us_cm", "120")
+    if len(x_cond) == 0:
+        return x_cond, y_cond, y_cond
+    y_filtered = robust_rolling_mean(y_cond, window=CONDUCTIVITY_FILTER_WINDOW, outlier_sigma=3.0)
+    return x_cond, y_cond, y_filtered
+
+
+def detect_on_water_start(decoded_rows: Iterable[Dict[str, object]]) -> OnWaterDetection:
+    """Detect launch/on-water start from filtered conductivity."""
+    x_cond, _, y_filt = conductivity_series(decoded_rows)
+    if len(x_cond) < ON_WATER_MIN_CONSECUTIVE:
+        return OnWaterDetection(start_s=None, steady_state_us_cm=None, threshold_us_cm=None)
+
+    finite = np.isfinite(x_cond) & np.isfinite(y_filt)
+    x_use = x_cond[finite]
+    y_use = y_filt[finite]
+    if len(x_use) < ON_WATER_MIN_CONSECUTIVE:
+        return OnWaterDetection(start_s=None, steady_state_us_cm=None, threshold_us_cm=None)
+
+    high_cut = float(np.quantile(y_use, ON_WATER_STEADY_TOP_QUANTILE))
+    steady_candidates = y_use[y_use >= high_cut]
+    if len(steady_candidates) == 0:
+        return OnWaterDetection(start_s=None, steady_state_us_cm=None, threshold_us_cm=None)
+
+    steady_state = float(np.median(steady_candidates))
+    if steady_state <= 0.0:
+        return OnWaterDetection(start_s=None, steady_state_us_cm=None, threshold_us_cm=None)
+
+    threshold = steady_state * ON_WATER_THRESHOLD_FRAC
+    run_len = ON_WATER_MIN_CONSECUTIVE
+
+    for i in range(0, len(y_use) - run_len + 1):
+        window = y_use[i : i + run_len]
+        if np.all(np.isfinite(window)) and np.all(window >= threshold):
+            return OnWaterDetection(
+                start_s=float(x_use[i]),
+                steady_state_us_cm=steady_state,
+                threshold_us_cm=threshold,
+            )
+
+    return OnWaterDetection(start_s=None, steady_state_us_cm=steady_state, threshold_us_cm=threshold)
+
+
+def filter_frames_by_start(frames: List[ParsedFrame], start_s: float) -> List[ParsedFrame]:
+    return [frame for frame in frames if math.isfinite(frame.elapsed_s) and frame.elapsed_s >= start_s]
+
+
+def filter_decoded_rows_by_start(
+    decoded_rows: List[Dict[str, object]],
+    start_s: float,
+) -> List[Dict[str, object]]:
+    filtered: List[Dict[str, object]] = []
+    for row in decoded_rows:
+        try:
+            elapsed = float(row["elapsed_s"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        if math.isfinite(elapsed) and elapsed >= start_s:
+            filtered.append(row)
+    return filtered
+
+
 def estimate_canfd_frame_time_s(
     payload_bytes: int,
     nominal_bitrate_bps: float = CAN_NOMINAL_BITRATE_BPS,
@@ -608,21 +687,34 @@ def extract_gps_points(frames: Iterable[ParsedFrame]) -> Tuple[np.ndarray, np.nd
     return np.array(lons), np.array(lats), np.array(speeds)
 
 
-def extract_ais_points(frames: Iterable[ParsedFrame]) -> Tuple[np.ndarray, np.ndarray]:
-    lons: List[float] = []
-    lats: List[float] = []
-    for frame in frames:
+def extract_ais_tracks(frames: Iterable[ParsedFrame]) -> Dict[int, Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    tracks: Dict[int, Dict[str, List[float]]] = {}
+    for idx, frame in enumerate(frames):
         if frame.can_id != "060":
             continue
         d = frame.data
         if len(d) < 12:
             continue
+        mmsi = int(le_u32(d, 0)) if len(d) >= 4 else -1
         lat = (le_u32(d, 4) / 1_000_000.0) - 90.0
         lon = (le_u32(d, 8) / 1_000_000.0) - 180.0
-        if math.isfinite(lat) and math.isfinite(lon):
-            lats.append(lat)
-            lons.append(lon)
-    return np.array(lons), np.array(lats)
+        t = float(frame.elapsed_s) if math.isfinite(frame.elapsed_s) else float(idx)
+        if not math.isfinite(lat) or not math.isfinite(lon) or mmsi < 0:
+            continue
+        if mmsi not in tracks:
+            tracks[mmsi] = {"lon": [], "lat": [], "t": []}
+        tracks[mmsi]["lon"].append(lon)
+        tracks[mmsi]["lat"].append(lat)
+        tracks[mmsi]["t"].append(t)
+
+    out: Dict[int, Tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+    for mmsi, data in tracks.items():
+        lon_arr = np.array(data["lon"], dtype=float)
+        lat_arr = np.array(data["lat"], dtype=float)
+        t_arr = np.array(data["t"], dtype=float)
+        order = np.argsort(t_arr)
+        out[mmsi] = (lon_arr[order], lat_arr[order], t_arr[order])
+    return out
 
 
 def project_to_local_km(
@@ -640,25 +732,25 @@ def project_to_local_km(
     return x_km, y_km
 
 
-def filter_ais_near_gps(
-    ais_lon: np.ndarray,
-    ais_lat: np.ndarray,
+def filter_ais_tracks_near_gps(
+    ais_tracks: Dict[int, Tuple[np.ndarray, np.ndarray, np.ndarray]],
     gps_ref_lon: float,
     gps_ref_lat: float,
     half_range_deg: float = AIS_NEARBY_THRESHOLD_DEG,
-) -> Tuple[np.ndarray, np.ndarray]:
-    if ais_lon.size == 0 or ais_lat.size == 0:
-        return ais_lon, ais_lat
-    mask = (np.abs(ais_lon - gps_ref_lon) <= half_range_deg) & (
-        np.abs(ais_lat - gps_ref_lat) <= half_range_deg
-    )
-    return ais_lon[mask], ais_lat[mask]
+) -> Dict[int, Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    filtered: Dict[int, Tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+    for mmsi, (lon, lat, t) in ais_tracks.items():
+        mask = (np.abs(lon - gps_ref_lon) <= half_range_deg) & (np.abs(lat - gps_ref_lat) <= half_range_deg)
+        if np.any(mask):
+            filtered[mmsi] = (lon[mask], lat[mask], t[mask])
+    return filtered
 
 
 def style_axis(ax: plt.Axes, title: str) -> None:
     ax.set_facecolor("#111827")
     ax.set_title(title, color="#E5E7EB", fontsize=11, pad=8)
     ax.grid(color="#374151", alpha=0.35, linewidth=0.8)
+    ax.set_axisbelow(True)
     for spine in ax.spines.values():
         spine.set_color("#374151")
     ax.tick_params(colors="#D1D5DB", labelsize=9)
@@ -681,6 +773,7 @@ def annotate_no_data(ax: plt.Axes, text: str = "No decoded data") -> None:
 
 def style_twin_y_axis(ax: plt.Axes) -> None:
     ax.set_facecolor("none")
+    ax.set_axisbelow(True)
     ax.tick_params(colors="#D1D5DB", labelsize=9)
     ax.yaxis.label.set_color("#D1D5DB")
     for spine in ax.spines.values():
@@ -702,6 +795,150 @@ def apply_distance_axis_units(
         ax.set_ylabel("North/South Offset (km)")
 
 
+def flatten_ais_track_points(
+    ais_tracks: Dict[int, Tuple[np.ndarray, np.ndarray, np.ndarray]]
+) -> Tuple[np.ndarray, np.ndarray]:
+    lon_parts: List[np.ndarray] = []
+    lat_parts: List[np.ndarray] = []
+    for lon, lat, _ in ais_tracks.values():
+        if len(lon) == 0:
+            continue
+        lon_parts.append(lon)
+        lat_parts.append(lat)
+    if not lon_parts:
+        return np.array([]), np.array([])
+    return np.concatenate(lon_parts), np.concatenate(lat_parts)
+
+
+def add_gps_speed_line(
+    fig: plt.Figure,
+    ax: plt.Axes,
+    gps_x_km: np.ndarray,
+    gps_y_km: np.ndarray,
+    gps_speed_kmh: np.ndarray,
+) -> None:
+    """Draw GPS track as a line-only path, colored by speed when possible."""
+    if len(gps_x_km) == 0:
+        return
+
+    if len(gps_x_km) == 1:
+        ax.plot(gps_x_km, gps_y_km, color="#93C5FD", linewidth=1.8, alpha=0.95)
+        ax.plot([], [], color="#93C5FD", linewidth=1.8, label="GPS track")
+        return
+
+    points = np.column_stack([gps_x_km, gps_y_km]).reshape(-1, 1, 2)
+    segments = np.concatenate([points[:-1], points[1:]], axis=1)
+    segment_speed = np.full(len(segments), np.nan, dtype=float)
+
+    if len(gps_speed_kmh) >= 2:
+        segment_speed = 0.5 * (gps_speed_kmh[:-1] + gps_speed_kmh[1:])
+
+    finite_mask = np.isfinite(segment_speed)
+    if np.any(finite_mask):
+        speed_min = float(np.nanmin(segment_speed[finite_mask]))
+        speed_max = float(np.nanmax(segment_speed[finite_mask]))
+        if speed_max <= speed_min:
+            speed_min -= 0.5
+            speed_max += 0.5
+
+        line = LineCollection(
+            segments,
+            cmap="turbo",
+            norm=plt.Normalize(vmin=speed_min, vmax=speed_max),
+            linewidths=1.8,
+            alpha=0.95,
+        )
+        line.set_array(segment_speed)
+        ax.add_collection(line)
+
+        cbar = fig.colorbar(line, ax=ax, fraction=0.046, pad=0.02)
+        cbar.ax.tick_params(color="#D1D5DB", labelcolor="#D1D5DB", labelsize=8)
+        cbar.set_label("Speed (km/h)", color="#D1D5DB", fontsize=9)
+        cbar.outline.set_edgecolor("#374151")
+    else:
+        ax.plot(gps_x_km, gps_y_km, color="#93C5FD", linewidth=1.8, alpha=0.95)
+
+    # Proxy legend entry to avoid point markers while keeping a clear legend.
+    ax.plot([], [], color="#93C5FD", linewidth=1.8, label="GPS track")
+
+
+def split_track_by_jump(
+    x_km: np.ndarray,
+    y_km: np.ndarray,
+    max_jump_km: float = AIS_TRACK_CONNECT_MAX_JUMP_KM,
+) -> List[Tuple[np.ndarray, np.ndarray]]:
+    """Split a track into connected segments, breaking on large jumps."""
+    if len(x_km) < 2:
+        return []
+
+    segs: List[Tuple[np.ndarray, np.ndarray]] = []
+    start = 0
+    jumps = np.hypot(np.diff(x_km), np.diff(y_km))
+
+    for i, jump_km in enumerate(jumps, start=1):
+        if not math.isfinite(float(jump_km)) or float(jump_km) > max_jump_km:
+            if i - start >= 2:
+                segs.append((x_km[start:i], y_km[start:i]))
+            start = i
+
+    if len(x_km) - start >= 2:
+        segs.append((x_km[start:], y_km[start:]))
+    return segs
+
+
+def add_ais_tracks_with_points(
+    ax: plt.Axes,
+    ais_tracks: Dict[int, Tuple[np.ndarray, np.ndarray, np.ndarray]],
+    origin_lon: float,
+    origin_lat: float,
+    max_jump_km: float = AIS_TRACK_CONNECT_MAX_JUMP_KM,
+) -> Tuple[List[np.ndarray], List[np.ndarray]]:
+    """Plot AIS per-MMSI points and segmented paths; return all projected points."""
+    ais_x_parts: List[np.ndarray] = []
+    ais_y_parts: List[np.ndarray] = []
+    if not ais_tracks:
+        return ais_x_parts, ais_y_parts
+
+    mmsi_sorted = sorted(ais_tracks.keys())
+    colors = plt.cm.plasma(np.linspace(0.15, 0.90, max(1, len(mmsi_sorted))))
+    added_line_legend = False
+    added_point_legend = False
+
+    for idx, mmsi in enumerate(mmsi_sorted):
+        lon, lat, _ = ais_tracks[mmsi]
+        if len(lon) == 0:
+            continue
+        ais_x_km, ais_y_km = project_to_local_km(lon, lat, origin_lon, origin_lat)
+        ais_x_parts.append(ais_x_km)
+        ais_y_parts.append(ais_y_km)
+
+        point_label = "AIS readings" if not added_point_legend else "_nolegend_"
+        ax.scatter(
+            ais_x_km,
+            ais_y_km,
+            color=colors[idx],
+            s=11,
+            alpha=0.35,
+            edgecolors="none",
+            label=point_label,
+        )
+        added_point_legend = True
+
+        for seg_x, seg_y in split_track_by_jump(ais_x_km, ais_y_km, max_jump_km=max_jump_km):
+            line_label = "AIS ship tracks" if not added_line_legend else "_nolegend_"
+            ax.plot(
+                seg_x,
+                seg_y,
+                color=colors[idx],
+                linewidth=1.2,
+                alpha=0.72,
+                label=line_label,
+            )
+            added_line_legend = True
+
+    return ais_x_parts, ais_y_parts
+
+
 def draw_frame_counts_panel(
     fig: plt.Figure, ax: plt.Axes, frames: List[ParsedFrame], decoded_rows: List[Dict[str, object]]
 ) -> None:
@@ -720,7 +957,7 @@ def draw_frame_counts_panel(
     ax.set_ylabel("Frames")
     max_val = max(vals) if vals else 0.0
     label_offset = max_val * 0.015
-    y_top = max_val * 1.10 if max_val > 0 else 1.0
+    y_top = max_val * 1.15 if max_val > 0 else 1.0
     ax.set_ylim(0.0, y_top)
     for bar, value in zip(bars, vals):
         y_label = min(bar.get_height() + label_offset, y_top * 0.985)
@@ -767,14 +1004,25 @@ def draw_imu_panel(
     x_heading, y_heading = signal_series(decoded_rows, "imu_heading_deg", "204")
 
     if len(x_roll) > 0:
-        ax.plot(x_roll, y_roll, color="#60A5FA", linewidth=1.4, label="Roll")
+        ax.plot(x_roll, y_roll, color="#60A5FA", linewidth=1.4, label="Roll", zorder=2)
     if len(x_pitch) > 0:
-        ax.plot(x_pitch, y_pitch, color="#FBBF24", linewidth=1.4, label="Pitch")
+        ax.plot(x_pitch, y_pitch, color="#FBBF24", linewidth=1.4, label="Pitch", zorder=2)
 
     ax_heading = ax.twinx()
     style_twin_y_axis(ax_heading)
+    # Keep heading trace on top of the primary axis artists.
+    ax_heading.set_zorder(ax.get_zorder() + 1)
+    ax_heading.patch.set_visible(False)
     if len(x_heading) > 0:
-        ax_heading.plot(x_heading, y_heading, color="#F472B6", linewidth=1.2, alpha=0.9, label="Heading")
+        ax_heading.plot(
+            x_heading,
+            y_heading,
+            color="#F472B6",
+            linewidth=1.3,
+            alpha=0.95,
+            label="Heading",
+            zorder=8,
+        )
         ax_heading.set_ylabel("Heading (deg)")
 
     if len(x_roll) == 0 and len(x_pitch) == 0 and len(x_heading) == 0:
@@ -845,71 +1093,58 @@ def draw_geo_panel(
     fig: plt.Figure, ax: plt.Axes, frames: List[ParsedFrame], decoded_rows: List[Dict[str, object]]
 ) -> None:
     del decoded_rows
-    style_axis(ax, "GPS Track + AIS Contacts (km)")
+    style_axis(ax, "GPS Track + AIS Ship Tracks")
     gps_lon, gps_lat, gps_speed = extract_gps_points(frames)
-    ais_lon, ais_lat = extract_ais_points(frames)
+    ais_tracks = extract_ais_tracks(frames)
 
-    # Filter to nearby AIS contacts around the GPS position to avoid distant outliers.
+    # Filter to nearby AIS contacts around the current GPS position.
     if len(gps_lon) > 0:
         gps_ref_lon = float(gps_lon[-1])
         gps_ref_lat = float(gps_lat[-1])
-        ais_lon, ais_lat = filter_ais_near_gps(ais_lon, ais_lat, gps_ref_lon, gps_ref_lat)
+        ais_tracks = filter_ais_tracks_near_gps(ais_tracks, gps_ref_lon, gps_ref_lat)
 
-    if len(gps_lon) > 0 and len(ais_lon) > 0:
-        origin_lon = float(np.mean(np.concatenate([gps_lon, ais_lon])))
-        origin_lat = float(np.mean(np.concatenate([gps_lat, ais_lat])))
+    ais_lon_all, ais_lat_all = flatten_ais_track_points(ais_tracks)
+
+    if len(gps_lon) > 0 and len(ais_lon_all) > 0:
+        origin_lon = float(np.mean(np.concatenate([gps_lon, ais_lon_all])))
+        origin_lat = float(np.mean(np.concatenate([gps_lat, ais_lat_all])))
     elif len(gps_lon) > 0:
         origin_lon = float(np.mean(gps_lon))
         origin_lat = float(np.mean(gps_lat))
-    elif len(ais_lon) > 0:
-        origin_lon = float(np.mean(ais_lon))
-        origin_lat = float(np.mean(ais_lat))
+    elif len(ais_lon_all) > 0:
+        origin_lon = float(np.mean(ais_lon_all))
+        origin_lat = float(np.mean(ais_lat_all))
     else:
         origin_lon = 0.0
         origin_lat = 0.0
 
     gps_x_km = np.array([])
     gps_y_km = np.array([])
-    ais_x_km = np.array([])
-    ais_y_km = np.array([])
+    ais_x_parts: List[np.ndarray] = []
+    ais_y_parts: List[np.ndarray] = []
 
     if len(gps_lon) > 0:
         gps_x_km, gps_y_km = project_to_local_km(gps_lon, gps_lat, origin_lon, origin_lat)
-        ax.plot(gps_x_km, gps_y_km, color="#93C5FD", linewidth=1.0, alpha=0.55)
-        scatter = ax.scatter(
-            gps_x_km,
-            gps_y_km,
-            c=gps_speed,
-            cmap="turbo",
-            s=15,
-            alpha=0.9,
-            edgecolors="none",
-            label="GPS path",
-        )
-        cbar = fig.colorbar(scatter, ax=ax, fraction=0.046, pad=0.02)
-        cbar.ax.tick_params(color="#D1D5DB", labelcolor="#D1D5DB", labelsize=8)
-        cbar.set_label("Speed (km/h)", color="#D1D5DB", fontsize=9)
-        cbar.outline.set_edgecolor("#374151")
+        add_gps_speed_line(fig, ax, gps_x_km, gps_y_km, gps_speed)
 
-    if len(ais_lon) > 0:
-        ais_x_km, ais_y_km = project_to_local_km(ais_lon, ais_lat, origin_lon, origin_lat)
-        ax.scatter(
-            ais_x_km,
-            ais_y_km,
-            color="#F472B6",
-            marker="x",
-            s=18,
-            linewidths=1.0,
-            alpha=0.75,
-            label="AIS contacts",
-        )
+    ais_x_parts, ais_y_parts = add_ais_tracks_with_points(
+        ax,
+        ais_tracks,
+        origin_lon,
+        origin_lat,
+        max_jump_km=AIS_TRACK_CONNECT_MAX_JUMP_KM,
+    )
 
-    if len(gps_lon) == 0 and len(ais_lon) == 0:
+    has_ais_points = any(arr.size > 0 for arr in ais_x_parts)
+
+    if len(gps_lon) == 0 and not has_ais_points:
         annotate_no_data(ax)
         return
 
-    all_x = np.concatenate([arr for arr in [gps_x_km, ais_x_km] if arr.size > 0])
-    all_y = np.concatenate([arr for arr in [gps_y_km, ais_y_km] if arr.size > 0])
+    all_x_candidates = [gps_x_km] + ais_x_parts
+    all_y_candidates = [gps_y_km] + ais_y_parts
+    all_x = np.concatenate([arr for arr in all_x_candidates if arr.size > 0])
+    all_y = np.concatenate([arr for arr in all_y_candidates if arr.size > 0])
     x_min = float(np.min(all_x))
     x_max = float(np.max(all_x))
     y_min = float(np.min(all_y))
@@ -934,80 +1169,71 @@ def draw_geo_panel(
     ax.set_ylim(y_lo, y_hi)
     ax.set_aspect("equal", adjustable="datalim")
     apply_distance_axis_units(ax, x_lo, x_hi, y_lo, y_hi)
-    ax.legend(facecolor="#111827", edgecolor="#374151", labelcolor="#D1D5DB")
+    handles, labels = ax.get_legend_handles_labels()
+    if handles:
+        ax.legend(handles, labels, facecolor="#111827", edgecolor="#374151", labelcolor="#D1D5DB")
 
 
 def draw_geo_gps_scaled_panel(
     fig: plt.Figure, ax: plt.Axes, frames: List[ParsedFrame], decoded_rows: List[Dict[str, object]]
 ) -> None:
     del decoded_rows
-    style_axis(ax, "GPS Track + AIS (GPS-Scaled, km)")
+    style_axis(ax, "GPS Track + AIS Ship Tracks (GPS-Scaled)")
     gps_lon, gps_lat, gps_speed = extract_gps_points(frames)
-    ais_lon, ais_lat = extract_ais_points(frames)
+    ais_tracks = extract_ais_tracks(frames)
 
-    # Filter to nearby AIS contacts around the GPS position to avoid distant outliers.
+    # Filter to nearby AIS contacts around the current GPS position.
     if len(gps_lon) > 0:
         gps_ref_lon = float(gps_lon[-1])
         gps_ref_lat = float(gps_lat[-1])
-        ais_lon, ais_lat = filter_ais_near_gps(ais_lon, ais_lat, gps_ref_lon, gps_ref_lat)
+        ais_tracks = filter_ais_tracks_near_gps(ais_tracks, gps_ref_lon, gps_ref_lat)
 
-    if len(gps_lon) > 0 and len(ais_lon) > 0:
-        origin_lon = float(np.mean(np.concatenate([gps_lon, ais_lon])))
-        origin_lat = float(np.mean(np.concatenate([gps_lat, ais_lat])))
+    ais_lon_all, ais_lat_all = flatten_ais_track_points(ais_tracks)
+
+    if len(gps_lon) > 0 and len(ais_lon_all) > 0:
+        origin_lon = float(np.mean(np.concatenate([gps_lon, ais_lon_all])))
+        origin_lat = float(np.mean(np.concatenate([gps_lat, ais_lat_all])))
     elif len(gps_lon) > 0:
         origin_lon = float(np.mean(gps_lon))
         origin_lat = float(np.mean(gps_lat))
-    elif len(ais_lon) > 0:
-        origin_lon = float(np.mean(ais_lon))
-        origin_lat = float(np.mean(ais_lat))
+    elif len(ais_lon_all) > 0:
+        origin_lon = float(np.mean(ais_lon_all))
+        origin_lat = float(np.mean(ais_lat_all))
     else:
         origin_lon = 0.0
         origin_lat = 0.0
 
     gps_x_km = np.array([])
     gps_y_km = np.array([])
-    ais_x_km = np.array([])
-    ais_y_km = np.array([])
+    ais_x_parts: List[np.ndarray] = []
+    ais_y_parts: List[np.ndarray] = []
 
     if len(gps_lon) > 0:
         gps_x_km, gps_y_km = project_to_local_km(gps_lon, gps_lat, origin_lon, origin_lat)
-        ax.plot(gps_x_km, gps_y_km, color="#93C5FD", linewidth=1.0, alpha=0.55)
-        scatter = ax.scatter(
-            gps_x_km,
-            gps_y_km,
-            c=gps_speed,
-            cmap="turbo",
-            s=15,
-            alpha=0.9,
-            edgecolors="none",
-            label="GPS path",
-        )
-        cbar = fig.colorbar(scatter, ax=ax, fraction=0.046, pad=0.02)
-        cbar.ax.tick_params(color="#D1D5DB", labelcolor="#D1D5DB", labelsize=8)
-        cbar.set_label("Speed (km/h)", color="#D1D5DB", fontsize=9)
-        cbar.outline.set_edgecolor("#374151")
+        add_gps_speed_line(fig, ax, gps_x_km, gps_y_km, gps_speed)
 
-    if len(ais_lon) > 0:
-        ais_x_km, ais_y_km = project_to_local_km(ais_lon, ais_lat, origin_lon, origin_lat)
-        ax.scatter(
-            ais_x_km,
-            ais_y_km,
-            color="#F472B6",
-            marker="x",
-            s=18,
-            linewidths=1.0,
-            alpha=0.75,
-            label="AIS contacts",
-        )
+    ais_x_parts, ais_y_parts = add_ais_tracks_with_points(
+        ax,
+        ais_tracks,
+        origin_lon,
+        origin_lat,
+        max_jump_km=AIS_TRACK_CONNECT_MAX_JUMP_KM,
+    )
 
-    if len(gps_lon) == 0 and len(ais_lon) == 0:
+    has_ais_points = any(arr.size > 0 for arr in ais_x_parts)
+
+    if len(gps_lon) == 0 and not has_ais_points:
         annotate_no_data(ax)
         return
 
     # Scale bounds to GPS track size (with margin). If GPS is unavailable,
     # fall back to all available points.
-    base_x = gps_x_km if gps_x_km.size > 0 else np.concatenate([arr for arr in [gps_x_km, ais_x_km] if arr.size > 0])
-    base_y = gps_y_km if gps_y_km.size > 0 else np.concatenate([arr for arr in [gps_y_km, ais_y_km] if arr.size > 0])
+    if gps_x_km.size > 0:
+        base_x = gps_x_km
+        base_y = gps_y_km
+    else:
+        base_x = np.concatenate([arr for arr in ais_x_parts if arr.size > 0])
+        base_y = np.concatenate([arr for arr in ais_y_parts if arr.size > 0])
     x_min = float(np.min(base_x))
     x_max = float(np.max(base_x))
     y_min = float(np.min(base_y))
@@ -1022,7 +1248,9 @@ def draw_geo_gps_scaled_panel(
     ax.set_ylim(y_min - y_pad, y_max + y_pad)
     ax.set_aspect("equal", adjustable="datalim")
     apply_distance_axis_units(ax, x_min - x_pad, x_max + x_pad, y_min - y_pad, y_max + y_pad)
-    ax.legend(facecolor="#111827", edgecolor="#374151", labelcolor="#D1D5DB")
+    handles, labels = ax.get_legend_handles_labels()
+    if handles:
+        ax.legend(handles, labels, facecolor="#111827", edgecolor="#374151", labelcolor="#D1D5DB")
 
 
 def draw_pdb_voltages_panel(
@@ -1212,7 +1440,14 @@ def draw_sensor_cond_panel(
         annotate_no_data(ax)
         return
 
-    ax.plot(x_cond, y_cond, color="#34D399", linewidth=1.5, label="Conductivity (uS/cm)")
+    ax.plot(
+        x_cond,
+        y_cond,
+        color="#34D399",
+        linewidth=1.5,
+        alpha=0.95,
+        label="Raw conductivity",
+    )
     ax.set_xlabel("Elapsed Time (s)")
     ax.set_ylabel("Conductivity (uS/cm)")
     ax.legend(facecolor="#111827", edgecolor="#374151", labelcolor="#D1D5DB", loc="upper right")
@@ -1234,6 +1469,52 @@ PANEL_DRAWERS = {
     "sensor_cond": draw_sensor_cond_panel,
 }
 
+TIME_AXIS_PANEL_KEYS = {
+    "can_utilization",
+    "rudder",
+    "imu",
+    "wind_angle_split",
+    "wind_speed_split",
+    "pdb_voltages",
+    "battery_temps",
+    "sensor_temp",
+    "sensor_ph",
+    "sensor_cond",
+}
+
+
+def elapsed_time_bounds(frames: List[ParsedFrame]) -> Optional[Tuple[float, float]]:
+    times = [float(frame.elapsed_s) for frame in frames if math.isfinite(frame.elapsed_s)]
+    if not times:
+        return None
+    t_min = float(min(times))
+    t_max = float(max(times))
+    if t_max <= t_min:
+        t_max = t_min + 1e-6
+    return t_min, t_max
+
+
+def add_on_water_start_marker(ax: plt.Axes, start_s: float) -> None:
+    x_lo, x_hi = ax.get_xlim()
+    x_min = min(x_lo, x_hi)
+    x_max = max(x_lo, x_hi)
+    if start_s > x_max:
+        return
+
+    start_clamped = max(start_s, x_min)
+    # Highlight only the on-water part of the horizontal axis (not a full vertical line).
+    ax.plot(
+        [start_clamped, x_max],
+        [0.0, 0.0],
+        transform=ax.get_xaxis_transform(),
+        color="#F43F5E",
+        linewidth=4.0,
+        alpha=0.95,
+        solid_capstyle="butt",
+        clip_on=True,
+        zorder=10,
+    )
+
 
 def create_dashboard(
     frames: List[ParsedFrame],
@@ -1242,6 +1523,10 @@ def create_dashboard(
     source_name: str,
     title: str,
     panels: List[str],
+    on_water_start_s: Optional[float] = None,
+    show_on_water_marker: bool = False,
+    subtitle_extra: str = "",
+    time_margin_frac: float = 0.0,
 ) -> None:
     panel_count = len(panels)
     if panel_count == 0:
@@ -1272,6 +1557,12 @@ def create_dashboard(
         bottom=footer_height_in / fig_height_in,
         top=1.0 - (header_height_in / fig_height_in),
     )
+    time_bounds = elapsed_time_bounds(frames)
+    if time_bounds is not None:
+        t_min, t_max = time_bounds
+        span = max(t_max - t_min, 1e-6)
+        pad = max(0.0, float(time_margin_frac)) * span
+        time_bounds = (t_min - pad, t_max + pad)
 
     for idx, panel_key in enumerate(panels):
         row = idx // ncols
@@ -1283,6 +1574,10 @@ def create_dashboard(
             annotate_no_data(ax, "Unknown panel key")
             continue
         drawer(fig, ax, frames, decoded_rows)
+        if panel_key in TIME_AXIS_PANEL_KEYS and time_bounds is not None:
+            ax.set_xlim(*time_bounds)
+        if show_on_water_marker and on_water_start_s is not None and panel_key in TIME_AXIS_PANEL_KEYS:
+            add_on_water_start_marker(ax, on_water_start_s)
 
     for idx in range(panel_count, nrows * ncols):
         row = idx // ncols
@@ -1305,6 +1600,8 @@ def create_dashboard(
     subtitle = (
         f"Source: {source_name} | Frames: {len(frames):,} | Decoded signals: {len(decoded_rows):,}"
     )
+    if subtitle_extra:
+        subtitle = f"{subtitle} | {subtitle_extra}"
     fig.text(0.5, subtitle_y, subtitle, ha="center", va="center", color="#CBD5E1", fontsize=10)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1345,6 +1642,8 @@ def main() -> None:
     input_csv = args.input if args.input is not None else default_input_csv()
     frames = parse_csv(input_csv, max_rows=args.max_rows)
     decoded_rows = decode_frames(frames)
+    on_water_detection = detect_on_water_start(decoded_rows)
+    on_water_start_s = on_water_detection.start_s
 
     parsed_frames_path = args.outdir / "parsed_frames.csv"
     decoded_signals_path = args.outdir / "decoded_signals.csv"
@@ -1353,6 +1652,18 @@ def main() -> None:
 
     dashboard_paths: List[Path] = []
     if not args.skip_plot:
+        full_subtitle_extra = ""
+        on_water_frames: List[ParsedFrame] = []
+        on_water_decoded_rows: List[Dict[str, object]] = []
+        if (
+            on_water_start_s is not None
+            and on_water_detection.threshold_us_cm is not None
+            and on_water_detection.steady_state_us_cm is not None
+        ):
+            full_subtitle_extra = f"On-water start: {on_water_start_s:.0f}s"
+            on_water_frames = filter_frames_by_start(frames, on_water_start_s)
+            on_water_decoded_rows = filter_decoded_rows_by_start(decoded_rows, on_water_start_s)
+
         for output_name, cfg in DASHBOARD_CONFIG.items():
             title = str(cfg.get("title", "POLARIS CAN Dashboard"))
             panels_raw = cfg.get("panels", [])
@@ -1365,14 +1676,49 @@ def main() -> None:
                 source_name=input_csv.name,
                 title=title,
                 panels=panels,
+                on_water_start_s=on_water_start_s,
+                show_on_water_marker=on_water_start_s is not None,
+                subtitle_extra=full_subtitle_extra,
+                time_margin_frac=0.01,
             )
             dashboard_paths.append(output_path)
+
+            if on_water_start_s is not None and len(on_water_frames) > 0:
+                on_water_output_path = args.outdir / f"{Path(output_name).stem}_on_water.png"
+                create_dashboard(
+                    on_water_frames,
+                    on_water_decoded_rows,
+                    on_water_output_path,
+                    source_name=input_csv.name,
+                    title=f"{title} (On-Water Segment)",
+                    panels=panels,
+                    on_water_start_s=None,
+                    show_on_water_marker=False,
+                    subtitle_extra=f"Window: elapsed >= {on_water_start_s:.0f}s",
+                    time_margin_frac=0.0,
+                )
+                dashboard_paths.append(on_water_output_path)
 
     malformed = sum(1 for frame in frames if frame.parse_warning)
     print(f"Input file: {input_csv}")
     print(f"Total frames: {len(frames):,}")
     print(f"Frames with parse warnings: {malformed:,}")
     print(f"Decoded signal rows: {len(decoded_rows):,}")
+    if on_water_start_s is not None:
+        threshold_text = (
+            f"{on_water_detection.threshold_us_cm:.2f}" if on_water_detection.threshold_us_cm is not None else "n/a"
+        )
+        steady_text = (
+            f"{on_water_detection.steady_state_us_cm:.2f}"
+            if on_water_detection.steady_state_us_cm is not None
+            else "n/a"
+        )
+        print(
+            "Detected on-water start from conductivity: "
+            f"{on_water_start_s:.2f}s (threshold={threshold_text} uS/cm, steady={steady_text} uS/cm)"
+        )
+    else:
+        print("On-water start not detected from conductivity; generated full-dataset dashboards only.")
     print(f"Wrote: {parsed_frames_path}")
     print(f"Wrote: {decoded_signals_path}")
     if args.skip_plot:
