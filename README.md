@@ -1,16 +1,26 @@
 # POLARIS CAN Analysis Tool
 
+WARNING: This repo is nearly entirely AI generated.
+
+## Setup (assuming you are running Ubuntu)
+
+* Buy chatGPT plus
+* Install vscode if you don't have it already
+* Install the openAI CODEX extension
+* In the base directory of the repo run:
+  * Run `python3 -m venv venv`
+  * Run `source venv/bin/activate`
+  * Run `python3 -m pip install -e . -r requirements.txt`
+* See quick start with how to run the script.
+
+## Features
+
 This repo now includes parser + visualization tooling for CAN dumps:
 
 - CLI entrypoint: `analyze_can_frames.py` (wrapper)
 - Package modules: `polaris_can_analysis/`
 - Input CSV format: `Timestamp,Elapsed_Time_s,CAN_Message`
 - Example input file: `data/candump_20260315_153322.csv`
-
-The decoding logic is based on:
-
-- `prjt22-CAN Frames-170326-202810.pdf`
-- `prjt22-Debug CAN Frames-170326-202858.pdf`
 
 It is intentionally tolerant of partial implementations and shorter payloads that appear in real logs.
 
@@ -46,12 +56,12 @@ By default the script writes to `outputs/`:
 
 - `parsed_frames.csv`: one row per frame, including CAN ID, DLC, payload bytes, and parse warnings.
 - `decoded_signals.csv`: one row per decoded signal value.
-- `full/physical_dashboard.png`: full physical/navigation dashboard.
-- `full/electrical_dashboard.png`: full electrical/power dashboard.
-- `full/sensor_dashboard.png`: full wind + data sensor dashboard.
-- `on_water/physical_dashboard.png`: on-water-only physical/navigation dashboard.
-- `on_water/electrical_dashboard.png`: on-water-only electrical/power dashboard.
-- `on_water/sensor_dashboard.png`: on-water-only wind + data sensor dashboard.
+- `full/physical_dashboard_full.png`: full physical/navigation dashboard.
+- `full/electrical_dashboard_full.png`: full electrical/power dashboard.
+- `full/sensor_dashboard_full.png`: full wind + data sensor dashboard.
+- `on_water/physical_dashboard_trimmed.png`: on-water-only physical/navigation dashboard.
+- `on_water/electrical_dashboard_trimmed.png`: on-water-only electrical/power dashboard.
+- `on_water/sensor_dashboard_trimmed.png`: on-water-only wind + data sensor dashboard.
 
 ### Basemap (Satellite Imagery)
 
