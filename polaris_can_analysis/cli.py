@@ -31,7 +31,7 @@ from polaris_can_analysis.analytics import (
 )
 from polaris_can_analysis.config import DASHBOARD_CONFIG
 from polaris_can_analysis.models import ParsedFrame
-from polaris_can_analysis.plotting import create_dashboard
+from polaris_can_analysis.plotting import configure_basemap, create_dashboard
 from polaris_can_analysis.processing import (
     decode_frames,
     default_input_csv,
@@ -66,11 +66,35 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip plot generation",
     )
+    parser.add_argument(
+        "--basemap",
+        choices=["satellite", "none"],
+        default="satellite",
+        help="Background imagery for GPS/AIS panels.",
+    )
+    parser.add_argument(
+        "--tile-cache-dir",
+        type=Path,
+        default=Path("data/tile_cache"),
+        help="Directory used to read/write cached basemap tiles.",
+    )
+    parser.add_argument(
+        "--basemap-offline",
+        action="store_true",
+        help="Use cached tiles only; do not fetch any tiles from the internet.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    configure_basemap(
+        enabled=(args.basemap == "satellite"),
+        cache_dir=args.tile_cache_dir,
+        provider_key="esri_world_imagery",
+        offline=args.basemap_offline,
+    )
+
     input_csv = args.input if args.input is not None else default_input_csv()
     frames = parse_csv(input_csv, max_rows=args.max_rows)
     decoded_rows = decode_frames(frames)

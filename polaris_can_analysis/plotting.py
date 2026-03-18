@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -20,6 +21,7 @@ from polaris_can_analysis.analytics import (
     robust_rolling_mean,
     trailing_rolling_max,
 )
+from polaris_can_analysis.basemap import add_satellite_basemap
 from polaris_can_analysis.config import (
     AIS_TRACK_CONNECT_MAX_JUMP_KM,
     GEO_HORIZONTAL_PAD_FRAC,
@@ -30,6 +32,38 @@ from polaris_can_analysis.config import (
 )
 from polaris_can_analysis.models import ParsedFrame
 from polaris_can_analysis.processing import signal_series
+
+
+@dataclass
+class BasemapSettings:
+    enabled: bool = True
+    cache_dir: Path = Path("data/tile_cache")
+    provider_key: str = "esri_world_imagery"
+    offline: bool = False
+    alpha: float = 0.90
+    max_tiles: int = 64
+
+
+BASEMAP_SETTINGS = BasemapSettings()
+
+
+def configure_basemap(
+    enabled: bool = True,
+    cache_dir: Path = Path("data/tile_cache"),
+    provider_key: str = "esri_world_imagery",
+    offline: bool = False,
+    alpha: float = 0.90,
+    max_tiles: int = 64,
+) -> None:
+    global BASEMAP_SETTINGS
+    BASEMAP_SETTINGS = BasemapSettings(
+        enabled=bool(enabled),
+        cache_dir=Path(cache_dir),
+        provider_key=provider_key,
+        offline=bool(offline),
+        alpha=float(alpha),
+        max_tiles=max(1, int(max_tiles)),
+    )
 
 
 def style_axis(ax: plt.Axes, title: str) -> None:
@@ -82,7 +116,7 @@ def apply_distance_axis_units(
 
 
 def flatten_ais_track_points(
-    ais_tracks: Dict[int, Tuple[np.ndarray, np.ndarray, np.ndarray]]
+    ais_tracks: Dict[int, Tuple[np.ndarray, np.ndarray, np.ndarray]],
 ) -> Tuple[np.ndarray, np.ndarray]:
     lon_parts: List[np.ndarray] = []
     lat_parts: List[np.ndarray] = []
@@ -210,7 +244,9 @@ def add_ais_tracks_with_points(
         )
         added_point_legend = True
 
-        for seg_x, seg_y in split_track_by_jump(ais_x_km, ais_y_km, max_jump_km=max_jump_km):
+        for seg_x, seg_y in split_track_by_jump(
+            ais_x_km, ais_y_km, max_jump_km=max_jump_km
+        ):
             line_label = "AIS ship tracks" if not added_line_legend else "_nolegend_"
             ax.plot(
                 seg_x,
@@ -226,7 +262,10 @@ def add_ais_tracks_with_points(
 
 
 def draw_frame_counts_panel(
-    fig: plt.Figure, ax: plt.Axes, frames: List[ParsedFrame], decoded_rows: List[Dict[str, object]]
+    fig: plt.Figure,
+    ax: plt.Axes,
+    frames: List[ParsedFrame],
+    decoded_rows: List[Dict[str, object]],
 ) -> None:
     del fig, decoded_rows
     style_axis(ax, "Frame Counts")
@@ -261,7 +300,10 @@ def draw_frame_counts_panel(
 
 
 def draw_rudder_panel(
-    fig: plt.Figure, ax: plt.Axes, frames: List[ParsedFrame], decoded_rows: List[Dict[str, object]]
+    fig: plt.Figure,
+    ax: plt.Axes,
+    frames: List[ParsedFrame],
+    decoded_rows: List[Dict[str, object]],
 ) -> None:
     del fig, frames
     style_axis(ax, "Rudder Actual vs Commanded")
@@ -270,7 +312,9 @@ def draw_rudder_panel(
     if len(x_actual) > 0:
         ax.plot(x_actual, y_actual, color="#34D399", linewidth=1.5, label="Actual")
     if len(x_cmd) > 0:
-        ax.plot(x_cmd, y_cmd, color="#F97316", linewidth=1.5, alpha=0.9, label="Commanded")
+        ax.plot(
+            x_cmd, y_cmd, color="#F97316", linewidth=1.5, alpha=0.9, label="Commanded"
+        )
     if len(x_actual) == 0 and len(x_cmd) == 0:
         annotate_no_data(ax)
         return
@@ -280,7 +324,10 @@ def draw_rudder_panel(
 
 
 def draw_imu_panel(
-    fig: plt.Figure, ax: plt.Axes, frames: List[ParsedFrame], decoded_rows: List[Dict[str, object]]
+    fig: plt.Figure,
+    ax: plt.Axes,
+    frames: List[ParsedFrame],
+    decoded_rows: List[Dict[str, object]],
 ) -> None:
     del fig, frames
     style_axis(ax, "IMU Roll, Pitch, and Heading")
@@ -320,11 +367,16 @@ def draw_imu_panel(
     ax.set_ylabel("Roll/Pitch (deg)")
     lines = ax.get_lines() + ax_heading.get_lines()
     labels = [line.get_label() for line in lines]
-    ax.legend(lines, labels, facecolor="#111827", edgecolor="#374151", labelcolor="#D1D5DB")
+    ax.legend(
+        lines, labels, facecolor="#111827", edgecolor="#374151", labelcolor="#D1D5DB"
+    )
 
 
 def draw_wind_angle_split_panel(
-    fig: plt.Figure, ax: plt.Axes, frames: List[ParsedFrame], decoded_rows: List[Dict[str, object]]
+    fig: plt.Figure,
+    ax: plt.Axes,
+    frames: List[ParsedFrame],
+    decoded_rows: List[Dict[str, object]],
 ) -> None:
     del fig, frames
     style_axis(ax, "Wind Angle")
@@ -335,11 +387,23 @@ def draw_wind_angle_split_panel(
     has_data = False
     if len(x_040) > 0:
         x_040_plot, y_040_plot = break_wrapped_angle_series(x_040, y_040, wrap_deg=360.0)
-        ax.plot(x_040_plot, y_040_plot, color="#22D3EE", linewidth=1.4, label="Sail Wind Sensor")
+        ax.plot(
+            x_040_plot,
+            y_040_plot,
+            color="#22D3EE",
+            linewidth=1.4,
+            label="Sail Wind Sensor",
+        )
         has_data = True
     if len(x_041) > 0:
         x_041_plot, y_041_plot = break_wrapped_angle_series(x_041, y_041, wrap_deg=360.0)
-        ax.plot(x_041_plot, y_041_plot, color="#F59E0B", linewidth=1.4, label="Hull Wind Sensor")
+        ax.plot(
+            x_041_plot,
+            y_041_plot,
+            color="#F59E0B",
+            linewidth=1.4,
+            label="Hull Wind Sensor",
+        )
         has_data = True
 
     if not has_data:
@@ -348,11 +412,16 @@ def draw_wind_angle_split_panel(
 
     ax.set_xlabel("Elapsed Time (s)")
     ax.set_ylabel("Wind Angle (deg)")
-    ax.legend(facecolor="#111827", edgecolor="#374151", labelcolor="#D1D5DB", loc="upper right")
+    ax.legend(
+        facecolor="#111827", edgecolor="#374151", labelcolor="#D1D5DB", loc="upper right"
+    )
 
 
 def draw_wind_speed_split_panel(
-    fig: plt.Figure, ax: plt.Axes, frames: List[ParsedFrame], decoded_rows: List[Dict[str, object]]
+    fig: plt.Figure,
+    ax: plt.Axes,
+    frames: List[ParsedFrame],
+    decoded_rows: List[Dict[str, object]],
 ) -> None:
     del fig, frames
     style_axis(ax, "Wind Speed")
@@ -374,14 +443,20 @@ def draw_wind_speed_split_panel(
 
     ax.set_xlabel("Elapsed Time (s)")
     ax.set_ylabel("Wind Speed (knots)")
-    ax.legend(facecolor="#111827", edgecolor="#374151", labelcolor="#D1D5DB", loc="upper right")
+    ax.legend(
+        facecolor="#111827", edgecolor="#374151", labelcolor="#D1D5DB", loc="upper right"
+    )
 
 
-def draw_geo_panel(
-    fig: plt.Figure, ax: plt.Axes, frames: List[ParsedFrame], decoded_rows: List[Dict[str, object]]
+def _draw_geo_panel_common(
+    fig: plt.Figure,
+    ax: plt.Axes,
+    frames: List[ParsedFrame],
+    panel_title: str,
+    gps_scaled_bounds: bool,
+    use_basemap: bool,
 ) -> None:
-    del decoded_rows
-    style_axis(ax, "GPS Track + AIS Ship Tracks")
+    style_axis(ax, panel_title)
     gps_lon, gps_lat, gps_speed = extract_gps_points(frames)
     ais_tracks = extract_ais_tracks(frames)
 
@@ -424,125 +499,169 @@ def draw_geo_panel(
     )
 
     has_ais_points = any(arr.size > 0 for arr in ais_x_parts)
-
     if len(gps_lon) == 0 and not has_ais_points:
         annotate_no_data(ax)
         return
 
-    all_x_candidates = [gps_x_km] + ais_x_parts
-    all_y_candidates = [gps_y_km] + ais_y_parts
-    all_x = np.concatenate([arr for arr in all_x_candidates if arr.size > 0])
-    all_y = np.concatenate([arr for arr in all_y_candidates if arr.size > 0])
-    x_min = float(np.min(all_x))
-    x_max = float(np.max(all_x))
-    y_min = float(np.min(all_y))
-    y_max = float(np.max(all_y))
+    if gps_scaled_bounds:
+        # Scale bounds to GPS track size (with margin). If GPS is unavailable,
+        # fall back to all available points.
+        if gps_x_km.size > 0:
+            base_x = gps_x_km
+            base_y = gps_y_km
+        else:
+            base_x = np.concatenate([arr for arr in ais_x_parts if arr.size > 0])
+            base_y = np.concatenate([arr for arr in ais_y_parts if arr.size > 0])
 
-    span_x = max(x_max - x_min, 1e-6)
-    span_y = max(y_max - y_min, 1e-6)
-    x_pad = 0.5 * span_x * GEO_MARGIN_FRAC
-    y_pad = 0.5 * span_y * GEO_MARGIN_FRAC
+        x_min = float(np.min(base_x))
+        x_max = float(np.max(base_x))
+        y_min = float(np.min(base_y))
+        y_max = float(np.max(base_y))
+        span_x = max(x_max - x_min, 1e-6)
+        span_y = max(y_max - y_min, 1e-6)
+        x_pad = 0.5 * span_x * GEO_MARGIN_FRAC
+        y_pad = 0.5 * span_y * GEO_MARGIN_FRAC
+        x_lo = x_min - x_pad
+        x_hi = x_max + x_pad
+        y_lo = y_min - y_pad
+        y_hi = y_max + y_pad
+    else:
+        all_x_candidates = [gps_x_km] + ais_x_parts
+        all_y_candidates = [gps_y_km] + ais_y_parts
+        all_x = np.concatenate([arr for arr in all_x_candidates if arr.size > 0])
+        all_y = np.concatenate([arr for arr in all_y_candidates if arr.size > 0])
+        x_min = float(np.min(all_x))
+        x_max = float(np.max(all_x))
+        y_min = float(np.min(all_y))
+        y_max = float(np.max(all_y))
+        span_x = max(x_max - x_min, 1e-6)
+        span_y = max(y_max - y_min, 1e-6)
+        x_pad = 0.5 * span_x * GEO_MARGIN_FRAC
+        y_pad = 0.5 * span_y * GEO_MARGIN_FRAC
+        x_lo = x_min - x_pad
+        x_hi = x_max + x_pad
+        y_lo = y_min - y_pad
+        y_hi = y_max + y_pad
 
-    x_lo = x_min - x_pad
-    x_hi = x_max + x_pad
-    y_lo = y_min - y_pad
-    y_hi = y_max + y_pad
-
-    # Add explicit horizontal padding to avoid a narrow-looking geo panel.
-    extra_x = 0.5 * span_y * GEO_HORIZONTAL_PAD_FRAC
-    x_lo -= extra_x
-    x_hi += extra_x
+        # Add explicit horizontal padding to avoid a narrow-looking geo panel,
+        # but keep imagery panels tight so satellite tiles fill the full map area.
+        if not use_basemap:
+            extra_x = 0.5 * span_y * GEO_HORIZONTAL_PAD_FRAC
+            x_lo -= extra_x
+            x_hi += extra_x
 
     ax.set_xlim(x_lo, x_hi)
     ax.set_ylim(y_lo, y_hi)
     ax.set_aspect("equal", adjustable="datalim")
-    apply_distance_axis_units(ax, x_lo, x_hi, y_lo, y_hi)
+    # With adjustable="datalim", Matplotlib can further expand limits at draw-time
+    # (often in X). Force that update now so basemap tile bounds match final view.
+    ax.apply_aspect()
+    x_lo_view, x_hi_view = ax.get_xlim()
+    y_lo_view, y_hi_view = ax.get_ylim()
+
+    if use_basemap and BASEMAP_SETTINGS.enabled:
+        add_satellite_basemap(
+            ax=ax,
+            origin_lon_deg=origin_lon,
+            origin_lat_deg=origin_lat,
+            x_lo_km=x_lo_view,
+            x_hi_km=x_hi_view,
+            y_lo_km=y_lo_view,
+            y_hi_km=y_hi_view,
+            cache_dir=BASEMAP_SETTINGS.cache_dir,
+            provider_key=BASEMAP_SETTINGS.provider_key,
+            offline=BASEMAP_SETTINGS.offline,
+            max_tiles=BASEMAP_SETTINGS.max_tiles,
+            alpha=BASEMAP_SETTINGS.alpha,
+        )
+
+    x_lo_view, x_hi_view = ax.get_xlim()
+    y_lo_view, y_hi_view = ax.get_ylim()
+    apply_distance_axis_units(ax, x_lo_view, x_hi_view, y_lo_view, y_hi_view)
     handles, labels = ax.get_legend_handles_labels()
     if handles:
-        ax.legend(handles, labels, facecolor="#111827", edgecolor="#374151", labelcolor="#D1D5DB")
+        ax.legend(
+            handles,
+            labels,
+            facecolor="#111827",
+            edgecolor="#374151",
+            labelcolor="#D1D5DB",
+        )
+
+
+def draw_geo_panel(
+    fig: plt.Figure,
+    ax: plt.Axes,
+    frames: List[ParsedFrame],
+    decoded_rows: List[Dict[str, object]],
+) -> None:
+    del decoded_rows
+    _draw_geo_panel_common(
+        fig,
+        ax,
+        frames,
+        panel_title="GPS Track + AIS Ship Tracks",
+        gps_scaled_bounds=False,
+        use_basemap=False,
+    )
 
 
 def draw_geo_gps_scaled_panel(
-    fig: plt.Figure, ax: plt.Axes, frames: List[ParsedFrame], decoded_rows: List[Dict[str, object]]
+    fig: plt.Figure,
+    ax: plt.Axes,
+    frames: List[ParsedFrame],
+    decoded_rows: List[Dict[str, object]],
 ) -> None:
     del decoded_rows
-    style_axis(ax, "GPS Track + AIS Ship Tracks (GPS-Scaled)")
-    gps_lon, gps_lat, gps_speed = extract_gps_points(frames)
-    ais_tracks = extract_ais_tracks(frames)
-
-    # Filter to nearby AIS contacts around the current GPS position.
-    if len(gps_lon) > 0:
-        gps_ref_lon = float(gps_lon[-1])
-        gps_ref_lat = float(gps_lat[-1])
-        ais_tracks = filter_ais_tracks_near_gps(ais_tracks, gps_ref_lon, gps_ref_lat)
-
-    ais_lon_all, ais_lat_all = flatten_ais_track_points(ais_tracks)
-
-    if len(gps_lon) > 0 and len(ais_lon_all) > 0:
-        origin_lon = float(np.mean(np.concatenate([gps_lon, ais_lon_all])))
-        origin_lat = float(np.mean(np.concatenate([gps_lat, ais_lat_all])))
-    elif len(gps_lon) > 0:
-        origin_lon = float(np.mean(gps_lon))
-        origin_lat = float(np.mean(gps_lat))
-    elif len(ais_lon_all) > 0:
-        origin_lon = float(np.mean(ais_lon_all))
-        origin_lat = float(np.mean(ais_lat_all))
-    else:
-        origin_lon = 0.0
-        origin_lat = 0.0
-
-    gps_x_km = np.array([])
-    gps_y_km = np.array([])
-    ais_x_parts: List[np.ndarray] = []
-    ais_y_parts: List[np.ndarray] = []
-
-    if len(gps_lon) > 0:
-        gps_x_km, gps_y_km = project_to_local_km(gps_lon, gps_lat, origin_lon, origin_lat)
-        add_gps_speed_line(fig, ax, gps_x_km, gps_y_km, gps_speed)
-
-    ais_x_parts, ais_y_parts = add_ais_tracks_with_points(
+    _draw_geo_panel_common(
+        fig,
         ax,
-        ais_tracks,
-        origin_lon,
-        origin_lat,
-        max_jump_km=AIS_TRACK_CONNECT_MAX_JUMP_KM,
+        frames,
+        panel_title="GPS Track + AIS Ship Tracks (GPS-Scaled)",
+        gps_scaled_bounds=True,
+        use_basemap=False,
     )
 
-    has_ais_points = any(arr.size > 0 for arr in ais_x_parts)
 
-    if len(gps_lon) == 0 and not has_ais_points:
-        annotate_no_data(ax)
-        return
+def draw_geo_panel_imagery(
+    fig: plt.Figure,
+    ax: plt.Axes,
+    frames: List[ParsedFrame],
+    decoded_rows: List[Dict[str, object]],
+) -> None:
+    del decoded_rows
+    _draw_geo_panel_common(
+        fig,
+        ax,
+        frames,
+        panel_title="GPS Track + AIS Ship Tracks (Historic Satallite Imagery)",
+        gps_scaled_bounds=False,
+        use_basemap=True,
+    )
 
-    # Scale bounds to GPS track size (with margin). If GPS is unavailable,
-    # fall back to all available points.
-    if gps_x_km.size > 0:
-        base_x = gps_x_km
-        base_y = gps_y_km
-    else:
-        base_x = np.concatenate([arr for arr in ais_x_parts if arr.size > 0])
-        base_y = np.concatenate([arr for arr in ais_y_parts if arr.size > 0])
-    x_min = float(np.min(base_x))
-    x_max = float(np.max(base_x))
-    y_min = float(np.min(base_y))
-    y_max = float(np.max(base_y))
 
-    span_x = max(x_max - x_min, 1e-6)
-    span_y = max(y_max - y_min, 1e-6)
-    x_pad = 0.5 * span_x * GEO_MARGIN_FRAC
-    y_pad = 0.5 * span_y * GEO_MARGIN_FRAC
-
-    ax.set_xlim(x_min - x_pad, x_max + x_pad)
-    ax.set_ylim(y_min - y_pad, y_max + y_pad)
-    ax.set_aspect("equal", adjustable="datalim")
-    apply_distance_axis_units(ax, x_min - x_pad, x_max + x_pad, y_min - y_pad, y_max + y_pad)
-    handles, labels = ax.get_legend_handles_labels()
-    if handles:
-        ax.legend(handles, labels, facecolor="#111827", edgecolor="#374151", labelcolor="#D1D5DB")
+def draw_geo_gps_scaled_panel_imagery(
+    fig: plt.Figure,
+    ax: plt.Axes,
+    frames: List[ParsedFrame],
+    decoded_rows: List[Dict[str, object]],
+) -> None:
+    del decoded_rows
+    _draw_geo_panel_common(
+        fig,
+        ax,
+        frames,
+        panel_title="GPS Track + AIS Ship Tracks (GPS-Scaled, Historic Satallite Imagery)",
+        gps_scaled_bounds=True,
+        use_basemap=True,
+    )
 
 
 def draw_pdb_voltages_panel(
-    fig: plt.Figure, ax: plt.Axes, frames: List[ParsedFrame], decoded_rows: List[Dict[str, object]]
+    fig: plt.Figure,
+    ax: plt.Axes,
+    frames: List[ParsedFrame],
+    decoded_rows: List[Dict[str, object]],
 ) -> None:
     del fig, frames
     style_axis(ax, "PDB Cell Voltages")
@@ -559,7 +678,9 @@ def draw_pdb_voltages_panel(
         if len(xs) == 0:
             continue
         ys_filtered = robust_rolling_mean(ys, window=5, outlier_sigma=3.0)
-        ax.scatter(xs, ys, color=color, s=10, alpha=0.1, edgecolors="none", label="_nolegend_")
+        ax.scatter(
+            xs, ys, color=color, s=10, alpha=0.1, edgecolors="none", label="_nolegend_"
+        )
         ax.plot(
             xs,
             ys_filtered,
@@ -593,15 +714,14 @@ def draw_pdb_voltages_panel(
 
 
 def draw_can_utilization_panel(
-    fig: plt.Figure, ax: plt.Axes, frames: List[ParsedFrame], decoded_rows: List[Dict[str, object]]
+    fig: plt.Figure,
+    ax: plt.Axes,
+    frames: List[ParsedFrame],
+    decoded_rows: List[Dict[str, object]],
 ) -> None:
     del fig, decoded_rows
     style_axis(ax, "Estimated CAN FD Utilization (Raw + 5s Max)")
-    series_specs = [
-        (0.02, "#22EE29"),
-        (0.1, "#38BDF8"),
-        (0.5, "#8B5CF6")
-    ]
+    series_specs = [(0.02, "#22EE29"), (0.1, "#38BDF8"), (0.5, "#8B5CF6")]
 
     has_data = False
     y_max = 0.0
@@ -610,7 +730,9 @@ def draw_can_utilization_panel(
         if len(x) == 0:
             continue
         # Raw utilization points for this binning.
-        ax.scatter(x, y, color=color, s=8, alpha=0.10, edgecolors="none", label="_nolegend_")
+        ax.scatter(
+            x, y, color=color, s=8, alpha=0.10, edgecolors="none", label="_nolegend_"
+        )
 
         # Smoothed envelope: trailing max utilization over 5 seconds.
         window_points = max(1, int(round(UTILIZATION_MAX_WINDOW_S / window_s)))
@@ -634,11 +756,16 @@ def draw_can_utilization_panel(
     ax.set_ylim(0.0, max(1.0, y_max * 1.15))
     ax.set_xlabel("Elapsed Time (s)")
     ax.set_ylabel("Estimated Utilization (%)")
-    ax.legend(facecolor="#111827", edgecolor="#374151", labelcolor="#D1D5DB", loc="upper right")
+    ax.legend(
+        facecolor="#111827", edgecolor="#374151", labelcolor="#D1D5DB", loc="upper right"
+    )
 
 
 def draw_battery_temps_panel(
-    fig: plt.Figure, ax: plt.Axes, frames: List[ParsedFrame], decoded_rows: List[Dict[str, object]]
+    fig: plt.Figure,
+    ax: plt.Axes,
+    frames: List[ParsedFrame],
+    decoded_rows: List[Dict[str, object]],
 ) -> None:
     del fig, frames
     style_axis(ax, "Battery Pack Temperatures")
@@ -648,7 +775,15 @@ def draw_battery_temps_panel(
     has_data = False
     if len(x_t1) > 0:
         y_t1_filtered = robust_rolling_mean(y_t1, window=5, outlier_sigma=3.0)
-        ax.scatter(x_t1, y_t1, color="#FB7185", s=10, alpha=0.1, edgecolors="none", label="_nolegend_")
+        ax.scatter(
+            x_t1,
+            y_t1,
+            color="#FB7185",
+            s=10,
+            alpha=0.1,
+            edgecolors="none",
+            label="_nolegend_",
+        )
         ax.plot(
             x_t1,
             y_t1_filtered,
@@ -664,7 +799,15 @@ def draw_battery_temps_panel(
         has_data = True
     if len(x_t3) > 0:
         y_t3_filtered = robust_rolling_mean(y_t3, window=5, outlier_sigma=3.0)
-        ax.scatter(x_t3, y_t3, color="#22D3EE", s=10, alpha=0.1, edgecolors="none", label="_nolegend_")
+        ax.scatter(
+            x_t3,
+            y_t3,
+            color="#22D3EE",
+            s=10,
+            alpha=0.1,
+            edgecolors="none",
+            label="_nolegend_",
+        )
         ax.plot(
             x_t3,
             y_t3_filtered,
@@ -685,11 +828,16 @@ def draw_battery_temps_panel(
 
     ax.set_xlabel("Elapsed Time (s)")
     ax.set_ylabel("Temperature (C)")
-    ax.legend(facecolor="#111827", edgecolor="#374151", labelcolor="#D1D5DB", loc="upper right")
+    ax.legend(
+        facecolor="#111827", edgecolor="#374151", labelcolor="#D1D5DB", loc="upper right"
+    )
 
 
 def draw_sensor_temp_panel(
-    fig: plt.Figure, ax: plt.Axes, frames: List[ParsedFrame], decoded_rows: List[Dict[str, object]]
+    fig: plt.Figure,
+    ax: plt.Axes,
+    frames: List[ParsedFrame],
+    decoded_rows: List[Dict[str, object]],
 ) -> None:
     del fig, frames
     style_axis(ax, "Data Sensor: Temperature")
@@ -700,11 +848,16 @@ def draw_sensor_temp_panel(
     ax.plot(x_temp, y_temp, color="#F59E0B", linewidth=1.5, label="Temperature")
     ax.set_xlabel("Elapsed Time (s)")
     ax.set_ylabel("Temperature (C)")
-    ax.legend(facecolor="#111827", edgecolor="#374151", labelcolor="#D1D5DB", loc="upper right")
+    ax.legend(
+        facecolor="#111827", edgecolor="#374151", labelcolor="#D1D5DB", loc="upper right"
+    )
 
 
 def draw_sensor_ph_panel(
-    fig: plt.Figure, ax: plt.Axes, frames: List[ParsedFrame], decoded_rows: List[Dict[str, object]]
+    fig: plt.Figure,
+    ax: plt.Axes,
+    frames: List[ParsedFrame],
+    decoded_rows: List[Dict[str, object]],
 ) -> None:
     del fig, frames
     style_axis(ax, "Data Sensor: pH")
@@ -715,11 +868,16 @@ def draw_sensor_ph_panel(
     ax.plot(x_ph, y_ph, color="#60A5FA", linewidth=1.5, label="pH")
     ax.set_xlabel("Elapsed Time (s)")
     ax.set_ylabel("pH")
-    ax.legend(facecolor="#111827", edgecolor="#374151", labelcolor="#D1D5DB", loc="upper right")
+    ax.legend(
+        facecolor="#111827", edgecolor="#374151", labelcolor="#D1D5DB", loc="upper right"
+    )
 
 
 def draw_sensor_cond_panel(
-    fig: plt.Figure, ax: plt.Axes, frames: List[ParsedFrame], decoded_rows: List[Dict[str, object]]
+    fig: plt.Figure,
+    ax: plt.Axes,
+    frames: List[ParsedFrame],
+    decoded_rows: List[Dict[str, object]],
 ) -> None:
     del fig, frames
     style_axis(ax, "Data Sensor: Conductivity")
@@ -738,7 +896,9 @@ def draw_sensor_cond_panel(
     )
     ax.set_xlabel("Elapsed Time (s)")
     ax.set_ylabel("Conductivity (uS/cm)")
-    ax.legend(facecolor="#111827", edgecolor="#374151", labelcolor="#D1D5DB", loc="upper right")
+    ax.legend(
+        facecolor="#111827", edgecolor="#374151", labelcolor="#D1D5DB", loc="upper right"
+    )
 
 
 PANEL_DRAWERS = {
@@ -750,6 +910,8 @@ PANEL_DRAWERS = {
     "wind_speed_split": draw_wind_speed_split_panel,
     "geo": draw_geo_panel,
     "geo_gps_scaled": draw_geo_gps_scaled_panel,
+    "geo_imagery": draw_geo_panel_imagery,
+    "geo_gps_scaled_imagery": draw_geo_gps_scaled_panel_imagery,
     "pdb_voltages": draw_pdb_voltages_panel,
     "battery_temps": draw_battery_temps_panel,
     "sensor_temp": draw_sensor_temp_panel,
@@ -831,7 +993,9 @@ def create_dashboard(
     footer_height_in = 0.45
     left_margin_in = 0.9
     right_margin_in = 1.0
-    fig_height_in = max(5.2, (row_height_in * nrows) + header_height_in + footer_height_in)
+    fig_height_in = max(
+        5.2, (row_height_in * nrows) + header_height_in + footer_height_in
+    )
 
     fig = plt.figure(figsize=(fig_width_in, fig_height_in), dpi=130)
     fig.patch.set_facecolor("#0B1020")
@@ -864,7 +1028,11 @@ def create_dashboard(
         drawer(fig, ax, frames, decoded_rows)
         if panel_key in TIME_AXIS_PANEL_KEYS and time_bounds is not None:
             ax.set_xlim(*time_bounds)
-        if show_on_water_marker and on_water_start_s is not None and panel_key in TIME_AXIS_PANEL_KEYS:
+        if (
+            show_on_water_marker
+            and on_water_start_s is not None
+            and panel_key in TIME_AXIS_PANEL_KEYS
+        ):
             add_on_water_start_marker(ax, on_water_start_s)
 
     for idx in range(panel_count, nrows * ncols):
@@ -885,12 +1053,12 @@ def create_dashboard(
         fontsize=18,
         fontweight="bold",
     )
-    subtitle = (
-        f"Source: {source_name} | Frames: {len(frames):,} | Decoded signals: {len(decoded_rows):,}"
-    )
+    subtitle = f"Source: {source_name} | Frames: {len(frames):,} | Decoded signals: {len(decoded_rows):,}"
     if subtitle_extra:
         subtitle = f"{subtitle} | {subtitle_extra}"
-    fig.text(0.5, subtitle_y, subtitle, ha="center", va="center", color="#CBD5E1", fontsize=10)
+    fig.text(
+        0.5, subtitle_y, subtitle, ha="center", va="center", color="#CBD5E1", fontsize=10
+    )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, facecolor=fig.get_facecolor())

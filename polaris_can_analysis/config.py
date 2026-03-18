@@ -58,6 +58,8 @@ DASHBOARD_CONFIG: Dict[str, Dict[str, object]] = {
             "imu",
             "geo",
             "geo_gps_scaled",
+            "geo_imagery",
+            "geo_gps_scaled_imagery",
         ],
     },
     "electrical_dashboard.png": {

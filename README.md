@@ -34,6 +34,12 @@ Write outputs to a custom directory:
 python3 analyze_can_frames.py --outdir outputs/run_01
 ```
 
+Run with cached-only satellite imagery (no network):
+
+```bash
+python3 analyze_can_frames.py --basemap satellite --basemap-offline
+```
+
 ## Outputs
 
 By default the script writes to `outputs/`:
@@ -46,6 +52,19 @@ By default the script writes to `outputs/`:
 - `on_water/physical_dashboard.png`: on-water-only physical/navigation dashboard.
 - `on_water/electrical_dashboard.png`: on-water-only electrical/power dashboard.
 - `on_water/sensor_dashboard.png`: on-water-only wind + data sensor dashboard.
+
+### Basemap (Satellite Imagery)
+
+- GPS/AIS panels use Esri World Imagery by default (no API key required).
+- Tiles are cached locally under `data/tile_cache/`.
+- Cached tiles can be committed or shared so teammates can render without internet.
+- Use `--basemap-offline` to force cache-only behavior.
+- Use `--basemap none` to disable imagery and keep the plain background.
+- Physical dashboards now include four geo panels:
+  - plain local-scale
+  - plain GPS-scaled
+  - imagery local-scale
+  - imagery GPS-scaled
 
 ### Dashboard Configuration
 
