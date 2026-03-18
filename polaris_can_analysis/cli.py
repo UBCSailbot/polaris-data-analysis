@@ -30,7 +30,11 @@ from polaris_can_analysis.analytics import (
 )
 from polaris_can_analysis.config import DASHBOARD_CONFIG
 from polaris_can_analysis.models import ParsedFrame
-from polaris_can_analysis.plotting import configure_basemap, create_dashboard
+from polaris_can_analysis.plotting import (
+    configure_basemap,
+    configure_wind_smoothing,
+    create_dashboard,
+)
 from polaris_can_analysis.processing import (
     decode_frames,
     default_input_csv,
@@ -82,6 +86,17 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Use cached tiles only; do not fetch any tiles from the internet.",
     )
+    parser.add_argument(
+        "--wind-rolling-avg",
+        action="store_true",
+        help="Overlay rolling-average traces on wind angle/speed plots.",
+    )
+    parser.add_argument(
+        "--wind-rolling-window-s",
+        type=float,
+        default=30.0,
+        help="Rolling-average window in seconds for wind plots.",
+    )
     return parser.parse_args()
 
 
@@ -92,6 +107,10 @@ def main() -> None:
         cache_dir=args.tile_cache_dir,
         provider_key="esri_world_imagery",
         offline=args.basemap_offline,
+    )
+    configure_wind_smoothing(
+        enabled=args.wind_rolling_avg,
+        window_s=args.wind_rolling_window_s,
     )
 
     input_csv = args.input if args.input is not None else default_input_csv()
@@ -133,6 +152,10 @@ def main() -> None:
             trimmed_output_name = base_output.with_name(
                 f"{output_stem}_trimmed{output_suffix}"
             )
+            full_panels_dir = full_dashboard_dir / f"{full_output_name.stem}_panels"
+            trimmed_panels_dir = (
+                on_water_dashboard_dir / f"{trimmed_output_name.stem}_panels"
+            )
 
             output_path = full_dashboard_dir / full_output_name
             create_dashboard(
@@ -146,6 +169,7 @@ def main() -> None:
                 show_on_water_marker=on_water_start_s is not None,
                 subtitle_extra=full_subtitle_extra,
                 time_margin_frac=0.01,
+                individual_panels_dir=full_panels_dir,
             )
             dashboard_paths.append(output_path)
 
@@ -162,6 +186,7 @@ def main() -> None:
                     show_on_water_marker=False,
                     subtitle_extra=f"On-water Start: {on_water_start_s:.0f}s",
                     time_margin_frac=0.0,
+                    individual_panels_dir=trimmed_panels_dir,
                 )
                 dashboard_paths.append(on_water_output_path)
 

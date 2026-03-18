@@ -50,6 +50,12 @@ Run with cached-only satellite imagery (no network):
 python3 analyze_can_frames.py --basemap satellite --basemap-offline
 ```
 
+Run with optional 30s rolling-average overlay on wind plots:
+
+```bash
+python3 analyze_can_frames.py --wind-rolling-avg --wind-rolling-window-s 30
+```
+
 ## Outputs
 
 By default the script writes to `outputs/`:
@@ -59,9 +65,11 @@ By default the script writes to `outputs/`:
 - `full/physical_dashboard_full.png`: full physical/navigation dashboard.
 - `full/electrical_dashboard_full.png`: full electrical/power dashboard.
 - `full/sensor_dashboard_full.png`: full wind + data sensor dashboard.
+- `full/*_panels/`: per-dashboard subfolders with one PNG per individual panel.
 - `on_water/physical_dashboard_trimmed.png`: on-water-only physical/navigation dashboard.
 - `on_water/electrical_dashboard_trimmed.png`: on-water-only electrical/power dashboard.
 - `on_water/sensor_dashboard_trimmed.png`: on-water-only wind + data sensor dashboard.
+- `on_water/*_panels/`: per-dashboard subfolders with one PNG per individual panel.
 
 ### Basemap (Satellite Imagery)
 

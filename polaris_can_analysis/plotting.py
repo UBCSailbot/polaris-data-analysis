@@ -19,6 +19,8 @@ from polaris_can_analysis.analytics import (
     filter_ais_tracks_near_gps,
     project_to_local_km,
     robust_rolling_mean,
+    trailing_time_circular_mean_deg,
+    trailing_time_rolling_mean,
     trailing_rolling_max,
 )
 from polaris_can_analysis.basemap import add_satellite_basemap
@@ -47,6 +49,15 @@ class BasemapSettings:
 BASEMAP_SETTINGS = BasemapSettings()
 
 
+@dataclass
+class WindSmoothingSettings:
+    enabled: bool = False
+    window_s: float = 30.0
+
+
+WIND_SMOOTHING_SETTINGS = WindSmoothingSettings()
+
+
 def configure_basemap(
     enabled: bool = True,
     cache_dir: Path = Path("data/tile_cache"),
@@ -63,6 +74,14 @@ def configure_basemap(
         offline=bool(offline),
         alpha=float(alpha),
         max_tiles=max(1, int(max_tiles)),
+    )
+
+
+def configure_wind_smoothing(enabled: bool = False, window_s: float = 30.0) -> None:
+    global WIND_SMOOTHING_SETTINGS
+    WIND_SMOOTHING_SETTINGS = WindSmoothingSettings(
+        enabled=bool(enabled),
+        window_s=max(1e-6, float(window_s)),
     )
 
 
@@ -383,6 +402,8 @@ def draw_wind_angle_split_panel(
 
     x_040, y_040 = signal_series(decoded_rows, "wind_angle_deg", "040")
     x_041, y_041 = signal_series(decoded_rows, "wind_angle_deg", "041")
+    smoothing_on = WIND_SMOOTHING_SETTINGS.enabled
+    smooth_window_s = WIND_SMOOTHING_SETTINGS.window_s
 
     has_data = False
     if len(x_040) > 0:
@@ -391,9 +412,23 @@ def draw_wind_angle_split_panel(
             x_040_plot,
             y_040_plot,
             color="#22D3EE",
-            linewidth=1.4,
-            label="Sail Wind Sensor",
+            linewidth=1.2,
+            alpha=0.45 if smoothing_on else 1.0,
+            label="Sail Wind Sensor (raw)" if smoothing_on else "Sail Wind Sensor",
         )
+        if smoothing_on:
+            y_040_smooth = trailing_time_circular_mean_deg(x_040, y_040, smooth_window_s)
+            x_040_avg_plot, y_040_avg_plot = break_wrapped_angle_series(
+                x_040, y_040_smooth, wrap_deg=360.0
+            )
+            ax.plot(
+                x_040_avg_plot,
+                y_040_avg_plot,
+                color="#22D3EE",
+                linewidth=1.8,
+                alpha=0.95,
+                label=f"Sail Wind Sensor ({smooth_window_s:.0f}s avg)",
+            )
         has_data = True
     if len(x_041) > 0:
         x_041_plot, y_041_plot = break_wrapped_angle_series(x_041, y_041, wrap_deg=360.0)
@@ -401,9 +436,23 @@ def draw_wind_angle_split_panel(
             x_041_plot,
             y_041_plot,
             color="#F59E0B",
-            linewidth=1.4,
-            label="Hull Wind Sensor",
+            linewidth=1.2,
+            alpha=0.45 if smoothing_on else 1.0,
+            label="Hull Wind Sensor (raw)" if smoothing_on else "Hull Wind Sensor",
         )
+        if smoothing_on:
+            y_041_smooth = trailing_time_circular_mean_deg(x_041, y_041, smooth_window_s)
+            x_041_avg_plot, y_041_avg_plot = break_wrapped_angle_series(
+                x_041, y_041_smooth, wrap_deg=360.0
+            )
+            ax.plot(
+                x_041_avg_plot,
+                y_041_avg_plot,
+                color="#F59E0B",
+                linewidth=1.8,
+                alpha=0.95,
+                label=f"Hull Wind Sensor ({smooth_window_s:.0f}s avg)",
+            )
         has_data = True
 
     if not has_data:
@@ -428,13 +477,49 @@ def draw_wind_speed_split_panel(
 
     x_040, y_040 = signal_series(decoded_rows, "wind_speed_knots", "040")
     x_041, y_041 = signal_series(decoded_rows, "wind_speed_knots", "041")
+    smoothing_on = WIND_SMOOTHING_SETTINGS.enabled
+    smooth_window_s = WIND_SMOOTHING_SETTINGS.window_s
 
     has_data = False
     if len(x_040) > 0:
-        ax.plot(x_040, y_040, color="#22D3EE", linewidth=1.4, label="Sail Wind Sensor")
+        ax.plot(
+            x_040,
+            y_040,
+            color="#22D3EE",
+            linewidth=1.2,
+            alpha=0.45 if smoothing_on else 1.0,
+            label="Sail Wind Sensor (raw)" if smoothing_on else "Sail Wind Sensor",
+        )
+        if smoothing_on:
+            y_040_smooth = trailing_time_rolling_mean(x_040, y_040, smooth_window_s)
+            ax.plot(
+                x_040,
+                y_040_smooth,
+                color="#22D3EE",
+                linewidth=1.8,
+                alpha=0.95,
+                label=f"Sail Wind Sensor ({smooth_window_s:.0f}s avg)",
+            )
         has_data = True
     if len(x_041) > 0:
-        ax.plot(x_041, y_041, color="#F59E0B", linewidth=1.4, label="Hull Wind Sensor")
+        ax.plot(
+            x_041,
+            y_041,
+            color="#F59E0B",
+            linewidth=1.2,
+            alpha=0.45 if smoothing_on else 1.0,
+            label="Hull Wind Sensor (raw)" if smoothing_on else "Hull Wind Sensor",
+        )
+        if smoothing_on:
+            y_041_smooth = trailing_time_rolling_mean(x_041, y_041, smooth_window_s)
+            ax.plot(
+                x_041,
+                y_041_smooth,
+                color="#F59E0B",
+                linewidth=1.8,
+                alpha=0.95,
+                label=f"Hull Wind Sensor ({smooth_window_s:.0f}s avg)",
+            )
         has_data = True
 
     if not has_data:
@@ -966,6 +1051,43 @@ def add_on_water_start_marker(ax: plt.Axes, start_s: float) -> None:
     )
 
 
+def save_individual_panel_plot(
+    frames: List[ParsedFrame],
+    decoded_rows: List[Dict[str, object]],
+    panel_key: str,
+    panel_idx: int,
+    output_dir: Path,
+    time_bounds: Optional[Tuple[float, float]],
+    on_water_start_s: Optional[float],
+    show_on_water_marker: bool,
+) -> None:
+    panel_fig = plt.figure(figsize=(9.0, 4.8), dpi=130)
+    panel_fig.patch.set_facecolor("#0B1020")
+    panel_ax = panel_fig.add_subplot(111)
+
+    drawer = PANEL_DRAWERS.get(panel_key)
+    if drawer is None:
+        style_axis(panel_ax, f"Unknown Panel: {panel_key}")
+        annotate_no_data(panel_ax, "Unknown panel key")
+    else:
+        drawer(panel_fig, panel_ax, frames, decoded_rows)
+        if panel_key in TIME_AXIS_PANEL_KEYS and time_bounds is not None:
+            panel_ax.set_xlim(*time_bounds)
+        if (
+            show_on_water_marker
+            and on_water_start_s is not None
+            and panel_key in TIME_AXIS_PANEL_KEYS
+        ):
+            add_on_water_start_marker(panel_ax, on_water_start_s)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    panel_name = f"{panel_idx:02d}_{panel_key}.png"
+    panel_path = output_dir / panel_name
+    panel_fig.tight_layout(pad=0.9)
+    panel_fig.savefig(panel_path, facecolor=panel_fig.get_facecolor())
+    plt.close(panel_fig)
+
+
 def create_dashboard(
     frames: List[ParsedFrame],
     decoded_rows: List[Dict[str, object]],
@@ -977,6 +1099,7 @@ def create_dashboard(
     show_on_water_marker: bool = False,
     subtitle_extra: str = "",
     time_margin_frac: float = 0.0,
+    individual_panels_dir: Optional[Path] = None,
 ) -> None:
     panel_count = len(panels)
     if panel_count == 0:
@@ -1034,6 +1157,17 @@ def create_dashboard(
             and panel_key in TIME_AXIS_PANEL_KEYS
         ):
             add_on_water_start_marker(ax, on_water_start_s)
+        if individual_panels_dir is not None:
+            save_individual_panel_plot(
+                frames=frames,
+                decoded_rows=decoded_rows,
+                panel_key=panel_key,
+                panel_idx=idx + 1,
+                output_dir=individual_panels_dir,
+                time_bounds=time_bounds,
+                on_water_start_s=on_water_start_s,
+                show_on_water_marker=show_on_water_marker,
+            )
 
     for idx in range(panel_count, nrows * ncols):
         row = idx // ncols

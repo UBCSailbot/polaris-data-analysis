@@ -66,6 +66,110 @@ def robust_rolling_mean(ys: np.ndarray, window: int = 5, outlier_sigma: float = 
     return filtered
 
 
+def trailing_time_rolling_mean(
+    xs: np.ndarray,
+    ys: np.ndarray,
+    window_s: float,
+) -> np.ndarray:
+    """Trailing rolling mean over a time window (seconds)."""
+    n = len(ys)
+    if n == 0:
+        return ys
+
+    w = max(float(window_s), 1e-6)
+    order = np.argsort(xs, kind="mergesort")
+    x_sorted = xs[order].astype(float)
+    y_sorted = ys[order].astype(float)
+    out_sorted = np.full(n, np.nan, dtype=float)
+
+    left = 0
+    running_sum = 0.0
+    running_count = 0
+
+    for i in range(n):
+        xi = x_sorted[i]
+        if not math.isfinite(xi):
+            continue
+
+        while left < i and (
+            (not math.isfinite(x_sorted[left])) or (xi - x_sorted[left] > w)
+        ):
+            y_left = y_sorted[left]
+            if math.isfinite(y_left):
+                running_sum -= y_left
+                running_count -= 1
+            left += 1
+
+        yi = y_sorted[i]
+        if math.isfinite(yi):
+            running_sum += yi
+            running_count += 1
+
+        if running_count > 0:
+            out_sorted[i] = running_sum / float(running_count)
+
+    out = np.full(n, np.nan, dtype=float)
+    out[order] = out_sorted
+    return out
+
+
+def trailing_time_circular_mean_deg(
+    xs: np.ndarray,
+    ys_deg: np.ndarray,
+    window_s: float,
+) -> np.ndarray:
+    """Trailing circular mean for angles in degrees over a time window."""
+    n = len(ys_deg)
+    if n == 0:
+        return ys_deg
+
+    w = max(float(window_s), 1e-6)
+    order = np.argsort(xs, kind="mergesort")
+    x_sorted = xs[order].astype(float)
+    y_sorted = ys_deg[order].astype(float)
+    out_sorted = np.full(n, np.nan, dtype=float)
+
+    sin_vals = np.sin(np.deg2rad(y_sorted))
+    cos_vals = np.cos(np.deg2rad(y_sorted))
+
+    left = 0
+    sum_sin = 0.0
+    sum_cos = 0.0
+    running_count = 0
+
+    for i in range(n):
+        xi = x_sorted[i]
+        if not math.isfinite(xi):
+            continue
+
+        while left < i and (
+            (not math.isfinite(x_sorted[left])) or (xi - x_sorted[left] > w)
+        ):
+            y_left = y_sorted[left]
+            if math.isfinite(y_left):
+                sum_sin -= float(sin_vals[left])
+                sum_cos -= float(cos_vals[left])
+                running_count -= 1
+            left += 1
+
+        yi = y_sorted[i]
+        if math.isfinite(yi):
+            sum_sin += float(sin_vals[i])
+            sum_cos += float(cos_vals[i])
+            running_count += 1
+
+        if running_count > 0:
+            mean_rad = math.atan2(sum_sin / running_count, sum_cos / running_count)
+            mean_deg = math.degrees(mean_rad)
+            if mean_deg < 0.0:
+                mean_deg += 360.0
+            out_sorted[i] = mean_deg
+
+    out = np.full(n, np.nan, dtype=float)
+    out[order] = out_sorted
+    return out
+
+
 def conductivity_series(
     decoded_rows: Iterable[Dict[str, object]],
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
