@@ -720,7 +720,7 @@ def draw_can_utilization_panel(
     decoded_rows: List[Dict[str, object]],
 ) -> None:
     del fig, decoded_rows
-    style_axis(ax, "Estimated CAN FD Utilization (Raw + 5s Max)")
+    style_axis(ax, "Estimated CAN FD Utilization")
     series_specs = [(0.02, "#22EE29"), (0.1, "#38BDF8"), (0.5, "#8B5CF6")]
 
     has_data = False

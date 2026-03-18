@@ -9,8 +9,7 @@ can0  204  [16]  A6 28 D6 44 DB 29 00 00 04 29 30 75 30 75 00 00
 Output files:
 1) parsed_frames.csv   (one row per CAN frame)
 2) decoded_signals.csv (one row per decoded signal)
-3) physical_dashboard.png   (physical/navigation visualization set)
-4) electrical_dashboard.png (electrical/power visualization set)
+3) *_full.png and *_trimmed.png dashboards in output subfolders
 """
 
 from __future__ import annotations
@@ -127,7 +126,15 @@ def main() -> None:
             title = str(cfg.get("title", "POLARIS CAN Dashboard"))
             panels_raw = cfg.get("panels", [])
             panels = [str(item) for item in panels_raw] if isinstance(panels_raw, list) else []
-            output_path = full_dashboard_dir / output_name
+            base_output = Path(output_name)
+            output_suffix = base_output.suffix if base_output.suffix else ".png"
+            output_stem = base_output.stem if base_output.suffix else base_output.name
+            full_output_name = base_output.with_name(f"{output_stem}_full{output_suffix}")
+            trimmed_output_name = base_output.with_name(
+                f"{output_stem}_trimmed{output_suffix}"
+            )
+
+            output_path = full_dashboard_dir / full_output_name
             create_dashboard(
                 frames,
                 decoded_rows,
@@ -143,7 +150,7 @@ def main() -> None:
             dashboard_paths.append(output_path)
 
             if on_water_start_s is not None and len(on_water_frames) > 0:
-                on_water_output_path = on_water_dashboard_dir / output_name
+                on_water_output_path = on_water_dashboard_dir / trimmed_output_name
                 create_dashboard(
                     on_water_frames,
                     on_water_decoded_rows,
