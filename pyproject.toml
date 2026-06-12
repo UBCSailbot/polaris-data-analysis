@@ -21,10 +21,11 @@ dev = [
 
 [project.scripts]
 polaris-can-analyze = "polaris_can_analysis.cli:main"
+polaris-can-append = "polaris_can_analysis.log_append:main"
 
 [tool.setuptools]
 packages = ["polaris_can_analysis"]
-py-modules = ["analyze_can_frames"]
+py-modules = ["analyze_can_frames", "append_can_logs"]
 
 [tool.black]
 line-length = 90

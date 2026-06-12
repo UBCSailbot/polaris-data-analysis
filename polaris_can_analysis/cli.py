@@ -26,7 +26,9 @@ if "MPLCONFIGDIR" not in os.environ:
 from polaris_can_analysis.analytics import (
     detect_on_water_start,
     filter_decoded_rows_by_start,
+    filter_decoded_rows_by_time_range,
     filter_frames_by_start,
+    filter_frames_by_time_range,
 )
 from polaris_can_analysis.config import DASHBOARD_CONFIG
 from polaris_can_analysis.models import ParsedFrame
@@ -97,7 +99,30 @@ def parse_args() -> argparse.Namespace:
         default=30.0,
         help="Rolling-average window in seconds for wind plots.",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--trim-on-water",
+        action="store_true",
+        help=(
+            "Write/analyze only the detected on-water segment instead of the "
+            "full input file."
+        ),
+    )
+    parser.add_argument(
+        "--trim-duration-min",
+        type=float,
+        default=None,
+        help=(
+            "With --trim-on-water, keep only this many minutes after the "
+            "detected on-water start."
+        ),
+    )
+    args = parser.parse_args()
+    if args.trim_duration_min is not None:
+        if args.trim_duration_min <= 0:
+            parser.error("--trim-duration-min must be greater than 0")
+        if not args.trim_on_water:
+            parser.error("--trim-duration-min requires --trim-on-water")
+    return args
 
 
 def main() -> None:
@@ -118,6 +143,26 @@ def main() -> None:
     decoded_rows = decode_frames(frames)
     on_water_detection = detect_on_water_start(decoded_rows)
     on_water_start_s = on_water_detection.start_s
+    original_frame_count = len(frames)
+    original_decoded_count = len(decoded_rows)
+    trim_start_s = None
+    trim_end_s = None
+
+    if args.trim_on_water:
+        if on_water_start_s is None:
+            raise SystemExit(
+                "Cannot use --trim-on-water: on-water start was not detected "
+                "from conductivity."
+            )
+        trim_start_s = on_water_start_s
+        if args.trim_duration_min is not None:
+            trim_end_s = trim_start_s + (args.trim_duration_min * 60.0)
+        frames = filter_frames_by_time_range(frames, trim_start_s, trim_end_s)
+        decoded_rows = filter_decoded_rows_by_time_range(
+            decoded_rows,
+            trim_start_s,
+            trim_end_s,
+        )
 
     parsed_frames_path = args.outdir / "parsed_frames.csv"
     decoded_signals_path = args.outdir / "decoded_signals.csv"
@@ -126,73 +171,133 @@ def main() -> None:
 
     dashboard_paths: List[Path] = []
     if not args.skip_plot:
-        full_dashboard_dir = args.outdir / "full"
-        on_water_dashboard_dir = args.outdir / "on_water"
+        if args.trim_on_water:
+            trimmed_dashboard_dir = args.outdir / "trimmed"
+            duration_text = ""
+            if trim_start_s is not None and trim_end_s is not None:
+                duration_text = (
+                    f" | Duration: {(trim_end_s - trim_start_s) / 60.0:.1f} min"
+                )
+            subtitle_extra = f"On-water start: {on_water_start_s:.0f}s{duration_text}"
 
-        full_subtitle_extra = ""
-        on_water_frames: List[ParsedFrame] = []
-        on_water_decoded_rows: List[Dict[str, object]] = []
-        if (
-            on_water_start_s is not None
-            and on_water_detection.threshold_us_cm is not None
-            and on_water_detection.steady_state_us_cm is not None
-        ):
-            full_subtitle_extra = f"On-water start: {on_water_start_s:.0f}s"
-            on_water_frames = filter_frames_by_start(frames, on_water_start_s)
-            on_water_decoded_rows = filter_decoded_rows_by_start(decoded_rows, on_water_start_s)
-
-        for output_name, cfg in DASHBOARD_CONFIG.items():
-            title = str(cfg.get("title", "POLARIS CAN Dashboard"))
-            panels_raw = cfg.get("panels", [])
-            panels = [str(item) for item in panels_raw] if isinstance(panels_raw, list) else []
-            base_output = Path(output_name)
-            output_suffix = base_output.suffix if base_output.suffix else ".png"
-            output_stem = base_output.stem if base_output.suffix else base_output.name
-            full_output_name = base_output.with_name(f"{output_stem}_full{output_suffix}")
-            trimmed_output_name = base_output.with_name(
-                f"{output_stem}_trimmed{output_suffix}"
-            )
-            full_panels_dir = full_dashboard_dir / f"{full_output_name.stem}_panels"
-            trimmed_panels_dir = (
-                on_water_dashboard_dir / f"{trimmed_output_name.stem}_panels"
-            )
-
-            output_path = full_dashboard_dir / full_output_name
-            create_dashboard(
-                frames,
-                decoded_rows,
-                output_path,
-                source_name=input_csv.name,
-                title=title,
-                panels=panels,
-                on_water_start_s=on_water_start_s,
-                show_on_water_marker=on_water_start_s is not None,
-                subtitle_extra=full_subtitle_extra,
-                time_margin_frac=0.01,
-                individual_panels_dir=full_panels_dir,
-            )
-            dashboard_paths.append(output_path)
-
-            if on_water_start_s is not None and len(on_water_frames) > 0:
-                on_water_output_path = on_water_dashboard_dir / trimmed_output_name
+            for output_name, cfg in DASHBOARD_CONFIG.items():
+                title = str(cfg.get("title", "POLARIS CAN Dashboard"))
+                panels_raw = cfg.get("panels", [])
+                panels = (
+                    [str(item) for item in panels_raw]
+                    if isinstance(panels_raw, list)
+                    else []
+                )
+                base_output = Path(output_name)
+                output_suffix = base_output.suffix if base_output.suffix else ".png"
+                output_stem = base_output.stem if base_output.suffix else base_output.name
+                trimmed_output_name = base_output.with_name(
+                    f"{output_stem}_trimmed{output_suffix}"
+                )
+                panels_dir = (
+                    trimmed_dashboard_dir / f"{trimmed_output_name.stem}_panels"
+                )
+                output_path = trimmed_dashboard_dir / trimmed_output_name
                 create_dashboard(
-                    on_water_frames,
-                    on_water_decoded_rows,
-                    on_water_output_path,
+                    frames,
+                    decoded_rows,
+                    output_path,
                     source_name=input_csv.name,
-                    title=f"{title} (On-Water Segment)",
+                    title=f"{title} (Trimmed)",
                     panels=panels,
                     on_water_start_s=None,
                     show_on_water_marker=False,
-                    subtitle_extra=f"On-water Start: {on_water_start_s:.0f}s",
+                    subtitle_extra=subtitle_extra,
                     time_margin_frac=0.0,
-                    individual_panels_dir=trimmed_panels_dir,
+                    individual_panels_dir=panels_dir,
                 )
-                dashboard_paths.append(on_water_output_path)
+                dashboard_paths.append(output_path)
+        else:
+            full_dashboard_dir = args.outdir / "full"
+            on_water_dashboard_dir = args.outdir / "on_water"
+
+            full_subtitle_extra = ""
+            on_water_frames: List[ParsedFrame] = []
+            on_water_decoded_rows: List[Dict[str, object]] = []
+            if (
+                on_water_start_s is not None
+                and on_water_detection.threshold_us_cm is not None
+                and on_water_detection.steady_state_us_cm is not None
+            ):
+                full_subtitle_extra = f"On-water start: {on_water_start_s:.0f}s"
+                on_water_frames = filter_frames_by_start(frames, on_water_start_s)
+                on_water_decoded_rows = filter_decoded_rows_by_start(
+                    decoded_rows,
+                    on_water_start_s,
+                )
+
+            for output_name, cfg in DASHBOARD_CONFIG.items():
+                title = str(cfg.get("title", "POLARIS CAN Dashboard"))
+                panels_raw = cfg.get("panels", [])
+                panels = (
+                    [str(item) for item in panels_raw]
+                    if isinstance(panels_raw, list)
+                    else []
+                )
+                base_output = Path(output_name)
+                output_suffix = base_output.suffix if base_output.suffix else ".png"
+                output_stem = base_output.stem if base_output.suffix else base_output.name
+                full_output_name = base_output.with_name(
+                    f"{output_stem}_full{output_suffix}"
+                )
+                trimmed_output_name = base_output.with_name(
+                    f"{output_stem}_trimmed{output_suffix}"
+                )
+                full_panels_dir = (
+                    full_dashboard_dir / f"{full_output_name.stem}_panels"
+                )
+                trimmed_panels_dir = (
+                    on_water_dashboard_dir / f"{trimmed_output_name.stem}_panels"
+                )
+
+                output_path = full_dashboard_dir / full_output_name
+                create_dashboard(
+                    frames,
+                    decoded_rows,
+                    output_path,
+                    source_name=input_csv.name,
+                    title=title,
+                    panels=panels,
+                    on_water_start_s=on_water_start_s,
+                    show_on_water_marker=on_water_start_s is not None,
+                    subtitle_extra=full_subtitle_extra,
+                    time_margin_frac=0.01,
+                    individual_panels_dir=full_panels_dir,
+                )
+                dashboard_paths.append(output_path)
+
+                if on_water_start_s is not None and len(on_water_frames) > 0:
+                    on_water_output_path = on_water_dashboard_dir / trimmed_output_name
+                    create_dashboard(
+                        on_water_frames,
+                        on_water_decoded_rows,
+                        on_water_output_path,
+                        source_name=input_csv.name,
+                        title=f"{title} (On-Water Segment)",
+                        panels=panels,
+                        on_water_start_s=None,
+                        show_on_water_marker=False,
+                        subtitle_extra=f"On-water Start: {on_water_start_s:.0f}s",
+                        time_margin_frac=0.0,
+                        individual_panels_dir=trimmed_panels_dir,
+                    )
+                    dashboard_paths.append(on_water_output_path)
 
     malformed = sum(1 for frame in frames if frame.parse_warning)
     print(f"Input file: {input_csv}")
     print(f"Total frames: {len(frames):,}")
+    if args.trim_on_water:
+        trim_text = f"Trimmed to on-water segment starting at {trim_start_s:.2f}s"
+        if trim_end_s is not None:
+            trim_text += f" and ending at {trim_end_s:.2f}s"
+        print(trim_text)
+        print(f"Original frames before trim: {original_frame_count:,}")
+        print(f"Original decoded signal rows before trim: {original_decoded_count:,}")
     print(f"Frames with parse warnings: {malformed:,}")
     print(f"Decoded signal rows: {len(decoded_rows):,}")
     if on_water_start_s is not None:

@@ -143,7 +143,9 @@ def decode_frame(frame: ParsedFrame) -> List[Dict[str, object]]:
             status = d[4]
             steering_selection = (status >> 7) & 0x01
             steering_enable = (status >> 6) & 0x01
-            add_signal(out, frame, "steering_selection_bit", float(steering_selection), "flag")
+            add_signal(
+                out, frame, "steering_selection_bit", float(steering_selection), "flag"
+            )
             add_signal(out, frame, "steering_enable_bit", float(steering_enable), "flag")
             if len(d) >= 4:
                 target = le_u32(d, 0) / 1000.0
@@ -167,21 +169,41 @@ def decode_frame(frame: ParsedFrame) -> List[Dict[str, object]]:
         if len(d) >= 4:
             add_signal(out, frame, "mmsi", float(le_u32(d, 0)), "id")
         if len(d) >= 8:
-            add_signal(out, frame, "latitude_deg", (le_u32(d, 4) / 1_000_000.0) - 90.0, "deg")
+            add_signal(
+                out, frame, "latitude_deg", (le_u32(d, 4) / 1_000_000.0) - 90.0, "deg"
+            )
         if len(d) >= 12:
-            add_signal(out, frame, "longitude_deg", (le_u32(d, 8) / 1_000_000.0) - 180.0, "deg")
+            add_signal(
+                out, frame, "longitude_deg", (le_u32(d, 8) / 1_000_000.0) - 180.0, "deg"
+            )
         if len(d) >= 14:
             sog_raw = le_u16(d, 12)
-            add_signal(out, frame, "sog_knots", None if sog_raw == 1023 else sog_raw / 10.0, "knots")
+            add_signal(
+                out,
+                frame,
+                "sog_knots",
+                None if sog_raw == 1023 else sog_raw / 10.0,
+                "knots",
+            )
         if len(d) >= 16:
             cog_raw = le_u16(d, 14)
-            add_signal(out, frame, "cog_deg", None if cog_raw == 3600 else cog_raw / 10.0, "deg")
+            add_signal(
+                out, frame, "cog_deg", None if cog_raw == 3600 else cog_raw / 10.0, "deg"
+            )
         if len(d) >= 18:
             heading_raw = le_u16(d, 16)
-            add_signal(out, frame, "true_heading_deg", None if heading_raw == 511 else float(heading_raw), "deg")
+            add_signal(
+                out,
+                frame,
+                "true_heading_deg",
+                None if heading_raw == 511 else float(heading_raw),
+                "deg",
+            )
         if len(d) >= 19:
             rot = d[18] - 128
-            add_signal(out, frame, "rot_raw", None if rot == -128 else float(rot), "rot_units")
+            add_signal(
+                out, frame, "rot_raw", None if rot == -128 else float(rot), "rot_units"
+            )
         if len(d) >= 21:
             add_signal(out, frame, "ship_length_m", float(le_u16(d, 19)), "m")
         if len(d) >= 23:
@@ -193,9 +215,13 @@ def decode_frame(frame: ParsedFrame) -> List[Dict[str, object]]:
 
     elif cid == "070":
         if len(d) >= 4:
-            add_signal(out, frame, "latitude_deg", (le_u32(d, 0) / 1_000_000.0) - 90.0, "deg")
+            add_signal(
+                out, frame, "latitude_deg", (le_u32(d, 0) / 1_000_000.0) - 90.0, "deg"
+            )
         if len(d) >= 8:
-            add_signal(out, frame, "longitude_deg", (le_u32(d, 4) / 1_000_000.0) - 180.0, "deg")
+            add_signal(
+                out, frame, "longitude_deg", (le_u32(d, 4) / 1_000_000.0) - 180.0, "deg"
+            )
         if len(d) >= 12:
             add_signal(out, frame, "utc_seconds", le_u32(d, 8) / 1000.0, "s")
         if len(d) >= 13:
@@ -203,7 +229,9 @@ def decode_frame(frame: ParsedFrame) -> List[Dict[str, object]]:
         if len(d) >= 14:
             add_signal(out, frame, "utc_hours", float(d[13]), "h")
         if len(d) >= 20:
-            add_signal(out, frame, "speed_over_ground_kmh", le_u32(d, 16) / 1000.0, "km/h")
+            add_signal(
+                out, frame, "speed_over_ground_kmh", le_u32(d, 16) / 1000.0, "km/h"
+            )
 
     elif cid == "100":
         if len(d) >= 4:
@@ -229,7 +257,9 @@ def decode_frame(frame: ParsedFrame) -> List[Dict[str, object]]:
 
     elif cid == "204":
         if len(d) >= 2:
-            add_signal(out, frame, "actual_rudder_deg", (le_u16(d, 0) / 100.0) - 90.0, "deg")
+            add_signal(
+                out, frame, "actual_rudder_deg", (le_u16(d, 0) / 100.0) - 90.0, "deg"
+            )
         if len(d) >= 4:
             # User-confirmed correction: bytes [31:16] are pitch (not roll).
             add_signal(out, frame, "imu_pitch_deg", (le_u16(d, 2) / 100.0) - 180.0, "deg")
@@ -239,13 +269,17 @@ def decode_frame(frame: ParsedFrame) -> List[Dict[str, object]]:
         if len(d) >= 8:
             add_signal(out, frame, "imu_heading_deg", le_u16(d, 6) / 100.0, "deg")
         if len(d) >= 10:
-            add_signal(out, frame, "commanded_rudder_deg", (le_u16(d, 8) / 100.0) - 90.0, "deg")
+            add_signal(
+                out, frame, "commanded_rudder_deg", (le_u16(d, 8) / 100.0) - 90.0, "deg"
+            )
         if len(d) >= 12:
             add_signal(out, frame, "rudder_integral_raw", float(le_u16(d, 10)), "raw")
         if len(d) >= 14:
             add_signal(out, frame, "rudder_derivative_raw", float(le_u16(d, 12)), "raw")
         if len(d) >= 16:
-            add_signal(out, frame, "speed_over_ground_kmh", le_u16(d, 14) / 1000.0, "km/h")
+            add_signal(
+                out, frame, "speed_over_ground_kmh", le_u16(d, 14) / 1000.0, "km/h"
+            )
 
     elif cid == "206":
         if len(d) >= 2:
@@ -319,9 +353,19 @@ def write_parsed_frames_csv(frames: Iterable[ParsedFrame], output_path: Path) ->
             )
 
 
-def write_decoded_signals_csv(decoded_rows: Iterable[Dict[str, object]], output_path: Path) -> None:
+def write_decoded_signals_csv(
+    decoded_rows: Iterable[Dict[str, object]], output_path: Path
+) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    columns = ["timestamp", "elapsed_s", "can_id", "frame_name", "signal", "value", "unit"]
+    columns = [
+        "timestamp",
+        "elapsed_s",
+        "can_id",
+        "frame_name",
+        "signal",
+        "value",
+        "unit",
+    ]
     with output_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=columns)
         writer.writeheader()
@@ -355,4 +399,3 @@ def signal_series(
     ys = np.array(y)
     order = np.argsort(xs)
     return xs[order], ys[order]
-

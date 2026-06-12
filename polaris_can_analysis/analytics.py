@@ -218,12 +218,37 @@ def detect_on_water_start(decoded_rows: Iterable[Dict[str, object]]) -> OnWaterD
 
 
 def filter_frames_by_start(frames: List[ParsedFrame], start_s: float) -> List[ParsedFrame]:
-    return [frame for frame in frames if math.isfinite(frame.elapsed_s) and frame.elapsed_s >= start_s]
+    return filter_frames_by_time_range(frames, start_s=start_s)
+
+
+def filter_frames_by_time_range(
+    frames: List[ParsedFrame],
+    start_s: Optional[float] = None,
+    end_s: Optional[float] = None,
+) -> List[ParsedFrame]:
+    filtered: List[ParsedFrame] = []
+    for frame in frames:
+        if not math.isfinite(frame.elapsed_s):
+            continue
+        if start_s is not None and frame.elapsed_s < start_s:
+            continue
+        if end_s is not None and frame.elapsed_s > end_s:
+            continue
+        filtered.append(frame)
+    return filtered
 
 
 def filter_decoded_rows_by_start(
     decoded_rows: List[Dict[str, object]],
     start_s: float,
+) -> List[Dict[str, object]]:
+    return filter_decoded_rows_by_time_range(decoded_rows, start_s=start_s)
+
+
+def filter_decoded_rows_by_time_range(
+    decoded_rows: List[Dict[str, object]],
+    start_s: Optional[float] = None,
+    end_s: Optional[float] = None,
 ) -> List[Dict[str, object]]:
     filtered: List[Dict[str, object]] = []
     for row in decoded_rows:
@@ -231,8 +256,13 @@ def filter_decoded_rows_by_start(
             elapsed = float(row["elapsed_s"])
         except (TypeError, ValueError, KeyError):
             continue
-        if math.isfinite(elapsed) and elapsed >= start_s:
-            filtered.append(row)
+        if not math.isfinite(elapsed):
+            continue
+        if start_s is not None and elapsed < start_s:
+            continue
+        if end_s is not None and elapsed > end_s:
+            continue
+        filtered.append(row)
     return filtered
 
 

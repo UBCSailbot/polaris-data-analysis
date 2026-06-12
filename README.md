@@ -18,6 +18,7 @@ WARNING: This repo is nearly entirely AI generated.
 This repo now includes parser + visualization tooling for CAN dumps:
 
 - CLI entrypoint: `analyze_can_frames.py` (wrapper)
+- Log append entrypoint: `append_can_logs.py` (wrapper)
 - Package modules: `polaris_can_analysis/`
 - Input CSV format: `Timestamp,Elapsed_Time_s,CAN_Message`
 - Example input file: `data/candump_20260315_153322.csv`
@@ -54,6 +55,67 @@ Run with optional 30s rolling-average overlay on wind plots:
 
 ```bash
 python3 analyze_can_frames.py --wind-rolling-avg --wind-rolling-window-s 30
+```
+
+Analyze only the detected on-water segment:
+
+```bash
+python3 analyze_can_frames.py --input data/candump_20260606_appended.csv \
+  --outdir outputs/appended_20260606_on_water \
+  --trim-on-water
+```
+
+Analyze only the first 30 minutes of the detected on-water segment:
+
+```bash
+python3 analyze_can_frames.py --input data/candump_20260606_appended.csv \
+  --outdir outputs/appended_20260606_on_water_30min \
+  --trim-on-water \
+  --trim-duration-min 30
+```
+
+## Appending Overlapping Logs
+
+Use the append tool before analysis when a sail has multiple CAN dump CSVs,
+especially when files came from multiple laptops.
+
+Append the June 6 folder:
+
+```bash
+python3 append_can_logs.py "data/6Jun2026 - Unappended" --output data/candump_20260606_appended.csv
+```
+
+Then analyze the appended CSV:
+
+```bash
+python3 analyze_can_frames.py --input data/candump_20260606_appended.csv --outdir outputs/appended_20260606
+```
+
+If the package is installed with `python3 -m pip install -e . -r requirements.txt`,
+the console command is also available:
+
+```bash
+polaris-can-append "data/6Jun2026 - Unappended" --output data/candump_20260606_appended.csv
+```
+
+The appender:
+
+- accepts CSV files or directories containing CSV files;
+- safely skips blank/header-only files;
+- uses exact overlapping CAN-message sequences to synchronize laptops;
+- uses ID `070` bus UTC time when sequence overlap is unavailable;
+- uses laptop wall-clock/filename time only as a reported fallback;
+- removes identical frames from different source files with one-to-one matching
+  so laptop timestamp jitter does not leave duplicate overlap logs behind.
+
+Useful tuning options:
+
+```bash
+python3 append_can_logs.py "data/6Jun2026 - Unappended" \
+  --output data/candump_20260606_appended.csv \
+  --dedupe-tolerance-s 0.250 \
+  --sequence-length 8 \
+  --min-sequence-matches 5
 ```
 
 ## Outputs
