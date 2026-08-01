@@ -28,7 +28,47 @@ def le_u32(data: List[int], offset: int) -> int:
     )
 
 
+CANDUMP_GLOB = "candump_*.csv"
+
+# Subdirectories of data/ that never contain candumps.
+_NON_DATA_DIRS = {"tile_cache"}
+
+
+def discover_candumps(data_dir: Path, pattern: str = CANDUMP_GLOB) -> List[Path]:
+    """Find candump CSVs in ``data_dir``, including per-session subfolders.
+
+    Candumps live under ``data/<session>/`` (e.g. ``data/26Jun6_owt/``), so the
+    search recurses; passing a single session directory works the same way.
+    Results are sorted by filename, which is chronological given the
+    ``candump_YYYYMMDD_HHMMSS.csv`` naming.
+    """
+    matches = [
+        path
+        for path in data_dir.rglob(pattern)
+        if path.is_file()
+        and not set(path.relative_to(data_dir).parts[:-1]) & _NON_DATA_DIRS
+    ]
+    return sorted(matches, key=lambda p: (p.name, str(p)))
+
+
+def session_of(path: Path, data_dir: Path) -> str:
+    """Name the on-water-test session a candump belongs to.
+
+    ``data/26Jun6_owt/candump_*.csv`` -> ``26Jun6_owt``. A candump sitting
+    directly in ``data_dir`` (i.e. ``--data-dir`` already points at one session)
+    is attributed to that directory's own name.
+    """
+    rel = path.relative_to(data_dir)
+    if len(rel.parts) > 1:
+        return rel.parts[0]
+    return data_dir.resolve().name
+
+
 def default_input_csv() -> Path:
+    """Pick a default input: the first candump in ./data, else any CSV there."""
+    candumps = discover_candumps(Path("data"))
+    if candumps:
+        return candumps[0]
     candidates = sorted(Path("data").glob("*.csv"))
     if not candidates:
         raise FileNotFoundError("No CSV files found in ./data")
@@ -143,7 +183,9 @@ def decode_frame(frame: ParsedFrame) -> List[Dict[str, object]]:
             status = d[4]
             steering_selection = (status >> 7) & 0x01
             steering_enable = (status >> 6) & 0x01
-            add_signal(out, frame, "steering_selection_bit", float(steering_selection), "flag")
+            add_signal(
+                out, frame, "steering_selection_bit", float(steering_selection), "flag"
+            )
             add_signal(out, frame, "steering_enable_bit", float(steering_enable), "flag")
             if len(d) >= 4:
                 target = le_u32(d, 0) / 1000.0
@@ -163,25 +205,50 @@ def decode_frame(frame: ParsedFrame) -> List[Dict[str, object]]:
         if len(d) >= 4:
             add_signal(out, frame, "wind_speed_knots", le_u16(d, 2) / 10.0, "knots")
 
+    elif cid == "050":
+        if len(d) >= 4:
+            # E-compass true heading: degrees * 1000, 0 = north, increasing CW.
+            add_signal(out, frame, "true_heading_deg", le_u32(d, 0) / 1000.0, "deg")
+
     elif cid == "060":
         if len(d) >= 4:
             add_signal(out, frame, "mmsi", float(le_u32(d, 0)), "id")
         if len(d) >= 8:
-            add_signal(out, frame, "latitude_deg", (le_u32(d, 4) / 1_000_000.0) - 90.0, "deg")
+            add_signal(
+                out, frame, "latitude_deg", (le_u32(d, 4) / 1_000_000.0) - 90.0, "deg"
+            )
         if len(d) >= 12:
-            add_signal(out, frame, "longitude_deg", (le_u32(d, 8) / 1_000_000.0) - 180.0, "deg")
+            add_signal(
+                out, frame, "longitude_deg", (le_u32(d, 8) / 1_000_000.0) - 180.0, "deg"
+            )
         if len(d) >= 14:
             sog_raw = le_u16(d, 12)
-            add_signal(out, frame, "sog_knots", None if sog_raw == 1023 else sog_raw / 10.0, "knots")
+            add_signal(
+                out,
+                frame,
+                "sog_knots",
+                None if sog_raw == 1023 else sog_raw / 10.0,
+                "knots",
+            )
         if len(d) >= 16:
             cog_raw = le_u16(d, 14)
-            add_signal(out, frame, "cog_deg", None if cog_raw == 3600 else cog_raw / 10.0, "deg")
+            add_signal(
+                out, frame, "cog_deg", None if cog_raw == 3600 else cog_raw / 10.0, "deg"
+            )
         if len(d) >= 18:
             heading_raw = le_u16(d, 16)
-            add_signal(out, frame, "true_heading_deg", None if heading_raw == 511 else float(heading_raw), "deg")
+            add_signal(
+                out,
+                frame,
+                "true_heading_deg",
+                None if heading_raw == 511 else float(heading_raw),
+                "deg",
+            )
         if len(d) >= 19:
             rot = d[18] - 128
-            add_signal(out, frame, "rot_raw", None if rot == -128 else float(rot), "rot_units")
+            add_signal(
+                out, frame, "rot_raw", None if rot == -128 else float(rot), "rot_units"
+            )
         if len(d) >= 21:
             add_signal(out, frame, "ship_length_m", float(le_u16(d, 19)), "m")
         if len(d) >= 23:
@@ -193,9 +260,13 @@ def decode_frame(frame: ParsedFrame) -> List[Dict[str, object]]:
 
     elif cid == "070":
         if len(d) >= 4:
-            add_signal(out, frame, "latitude_deg", (le_u32(d, 0) / 1_000_000.0) - 90.0, "deg")
+            add_signal(
+                out, frame, "latitude_deg", (le_u32(d, 0) / 1_000_000.0) - 90.0, "deg"
+            )
         if len(d) >= 8:
-            add_signal(out, frame, "longitude_deg", (le_u32(d, 4) / 1_000_000.0) - 180.0, "deg")
+            add_signal(
+                out, frame, "longitude_deg", (le_u32(d, 4) / 1_000_000.0) - 180.0, "deg"
+            )
         if len(d) >= 12:
             add_signal(out, frame, "utc_seconds", le_u32(d, 8) / 1000.0, "s")
         if len(d) >= 13:
@@ -203,7 +274,9 @@ def decode_frame(frame: ParsedFrame) -> List[Dict[str, object]]:
         if len(d) >= 14:
             add_signal(out, frame, "utc_hours", float(d[13]), "h")
         if len(d) >= 20:
-            add_signal(out, frame, "speed_over_ground_kmh", le_u32(d, 16) / 1000.0, "km/h")
+            add_signal(
+                out, frame, "speed_over_ground_kmh", le_u32(d, 16) / 1000.0, "km/h"
+            )
 
     elif cid == "100":
         if len(d) >= 4:
@@ -229,7 +302,9 @@ def decode_frame(frame: ParsedFrame) -> List[Dict[str, object]]:
 
     elif cid == "204":
         if len(d) >= 2:
-            add_signal(out, frame, "actual_rudder_deg", (le_u16(d, 0) / 100.0) - 90.0, "deg")
+            add_signal(
+                out, frame, "actual_rudder_deg", (le_u16(d, 0) / 100.0) - 90.0, "deg"
+            )
         if len(d) >= 4:
             # User-confirmed correction: bytes [31:16] are pitch (not roll).
             add_signal(out, frame, "imu_pitch_deg", (le_u16(d, 2) / 100.0) - 180.0, "deg")
@@ -239,13 +314,17 @@ def decode_frame(frame: ParsedFrame) -> List[Dict[str, object]]:
         if len(d) >= 8:
             add_signal(out, frame, "imu_heading_deg", le_u16(d, 6) / 100.0, "deg")
         if len(d) >= 10:
-            add_signal(out, frame, "commanded_rudder_deg", (le_u16(d, 8) / 100.0) - 90.0, "deg")
+            add_signal(
+                out, frame, "commanded_rudder_deg", (le_u16(d, 8) / 100.0) - 90.0, "deg"
+            )
         if len(d) >= 12:
             add_signal(out, frame, "rudder_integral_raw", float(le_u16(d, 10)), "raw")
         if len(d) >= 14:
             add_signal(out, frame, "rudder_derivative_raw", float(le_u16(d, 12)), "raw")
         if len(d) >= 16:
-            add_signal(out, frame, "speed_over_ground_kmh", le_u16(d, 14) / 1000.0, "km/h")
+            add_signal(
+                out, frame, "speed_over_ground_kmh", le_u16(d, 14) / 1000.0, "km/h"
+            )
 
     elif cid == "206":
         if len(d) >= 2:
@@ -319,9 +398,19 @@ def write_parsed_frames_csv(frames: Iterable[ParsedFrame], output_path: Path) ->
             )
 
 
-def write_decoded_signals_csv(decoded_rows: Iterable[Dict[str, object]], output_path: Path) -> None:
+def write_decoded_signals_csv(
+    decoded_rows: Iterable[Dict[str, object]], output_path: Path
+) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    columns = ["timestamp", "elapsed_s", "can_id", "frame_name", "signal", "value", "unit"]
+    columns = [
+        "timestamp",
+        "elapsed_s",
+        "can_id",
+        "frame_name",
+        "signal",
+        "value",
+        "unit",
+    ]
     with output_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=columns)
         writer.writeheader()
@@ -355,4 +444,3 @@ def signal_series(
     ys = np.array(y)
     order = np.argsort(xs)
     return xs[order], ys[order]
-

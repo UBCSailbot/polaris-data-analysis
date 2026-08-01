@@ -14,6 +14,7 @@ FRAME_NAMES: Dict[str, str] = {
     "003": "POWER_OFF",
     "040": "SAIL_WIND",
     "041": "DATA_WIND",
+    "050": "RUDDER_DATA",
     "060": "SAIL_AIS",
     "070": "PATH_GPS",
     "100": "DATA_TEMP",

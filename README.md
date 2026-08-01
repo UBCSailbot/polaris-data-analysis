@@ -17,16 +17,49 @@ WARNING: This repo is nearly entirely AI generated.
 
 This repo now includes parser + visualization tooling for CAN dumps:
 
-- CLI entrypoint: `analyze_can_frames.py` (wrapper)
+- Top-level CLI scripts:
+  - `analyze_can_frames.py` — parse and decode a single candump, write per-file dashboards
+  - `decode_all_candumps.py` — decode each session into `outputs/<session>/decoded_signals.csv`
+  - `build_physical_dashboard.py` — render each session's dashboards into `outputs/<session>/`
 - Package modules: `polaris_can_analysis/`
 - Input CSV format: `Timestamp,Elapsed_Time_s,CAN_Message`
-- Example input file: `data/candump_20260315_153322.csv`
 
 It is intentionally tolerant of partial implementations and shorter payloads that appear in real logs.
 
+### Data Layout
+
+Candumps are stored per on-water test session:
+
+```
+data/
+  25Nov8_owt/candump_20251108_155236.csv
+  26Mar15_owt/candump_20260315_120418.csv    # + 13 more
+  26May23_owt/candump_20260523_134405.csv    # + 11 more
+  26Jun6_owt/candump_20260606_020740.csv     # + 51 more
+  tile_cache/                                # basemap tiles, not candump data
+```
+
+`--data-dir` is searched **recursively**, so the default `data` sweeps every
+session folder at once. Pass one session (`--data-dir data/26Jun6_owt`) to work
+on a single test. Files are ordered by filename, which is chronological given
+the `candump_YYYYMMDD_HHMMSS.csv` naming; `tile_cache/` is always skipped, and
+empty session folders are simply ignored.
+
+`decode_all_candumps.py` and `build_physical_dashboard.py` mirror this layout
+into `outputs/`, one folder per session:
+
+```
+outputs/
+  25Nov8_owt/decoded_signals.csv
+  25Nov8_owt/physical_dashboard.png
+  25Nov8_owt/electrical_dashboard.png
+  25Nov8_owt/sensor_dashboard.png
+  26Mar15_owt/…
+```
+
 ## Quick Start
 
-Run with the default CSV in `data/`:
+Run on the earliest candump found under `data/`:
 
 ```bash
 python3 analyze_can_frames.py
@@ -35,7 +68,7 @@ python3 analyze_can_frames.py
 Run on a specific file:
 
 ```bash
-python3 analyze_can_frames.py --input data/candump_20260315_153322.csv
+python3 analyze_can_frames.py --input data/26Jun6_owt/candump_20260606_020740.csv
 ```
 
 Write outputs to a custom directory:
@@ -50,9 +83,122 @@ Run with cached-only satellite imagery (no network):
 python3 analyze_can_frames.py --basemap satellite --basemap-offline
 ```
 
+## Commands
+
+All commands are run from the repo root inside the activated venv.
+
+### `analyze_can_frames.py` — parse + decode + plot one candump
+
+Single-file pipeline. Writes `parsed_frames.csv`, `decoded_signals.csv`, and the three dashboards (full + on-water trimmed when on-water start is detected from conductivity).
+
+```bash
+python3 analyze_can_frames.py [--input PATH] [--outdir DIR] [--max-rows N]
+                              [--skip-plot]
+                              [--basemap {satellite,none}] [--basemap-offline]
+                              [--tile-cache-dir DIR]
+```
+
+| Flag | Default | Purpose |
+| --- | --- | --- |
+| `--input PATH` | earliest `candump_*.csv` under `data/` (any session), else first CSV in `data/` | candump CSV to process |
+| `--outdir DIR` | `outputs` | output directory root |
+| `--max-rows N` | unlimited | cap rows parsed (quick iteration) |
+| `--skip-plot` | off | only write CSVs, no PNGs |
+| `--basemap satellite\|none` | `satellite` | background imagery for geo panels |
+| `--basemap-offline` | off | cache-only basemap tiles |
+| `--tile-cache-dir DIR` | `data/tile_cache` | tile cache location |
+
+### `decode_all_candumps.py` — one decoded CSV per session
+
+Groups the candumps under `--data-dir` by session folder and streams each
+session's files through the same parser/decoder used above, writing
+`outputs/<session>/decoded_signals.csv`. Within a session file the absolute
+`timestamp` column distinguishes sources; `elapsed_s` is per-file and repeats.
+
+```bash
+python3 decode_all_candumps.py [--data-dir DIR] [--output-dir DIR]
+                               [--filename NAME] [--glob PATTERN]
+```
+
+| Flag | Default | Purpose |
+| --- | --- | --- |
+| `--data-dir DIR` | `data` | root to search recursively (e.g. `data/26Jun6_owt` for one session) |
+| `--output-dir DIR` | `outputs` | root for the per-session output folders |
+| `--filename NAME` | `decoded_signals.csv` | CSV name written inside each session folder |
+| `--glob PATTERN` | `candump_*.csv` | filename glob, matched at any depth |
+
+Decode every session:
+
+```bash
+python3 decode_all_candumps.py
+# -> outputs/25Nov8_owt/decoded_signals.csv, outputs/26Mar15_owt/…, …
+```
+
+Decode one session:
+
+```bash
+python3 decode_all_candumps.py --data-dir data/26May23_owt
+# -> outputs/26May23_owt/decoded_signals.csv
+```
+
+### `build_physical_dashboard.py` — dashboards per session
+
+Groups the candumps under `--data-dir` by session folder, rebases each session's
+files onto one clock derived from their absolute timestamps (so the per-file
+timers don't overlap), and writes that session's dashboards to
+`outputs/<session>/`. All three dashboards are rendered unless `--config-key`
+narrows it.
+
+```bash
+python3 build_physical_dashboard.py [--data-dir DIR] [--output-dir DIR]
+                                    [--config-key KEY ...] [--combined]
+                                    [--glob PATTERN]
+                                    [--basemap {satellite,none}] [--basemap-offline]
+                                    [--tile-cache-dir DIR]
+                                    [--timezone TZ]
+```
+
+| Flag | Default | Purpose |
+| --- | --- | --- |
+| `--data-dir DIR` | `data` | root to search recursively (e.g. `data/26Jun6_owt` for one session) |
+| `--output-dir DIR` | `outputs` | root for the per-session output folders |
+| `--config-key KEY ...` | all three | keys into `DASHBOARD_CONFIG`: `physical_dashboard.png`, `electrical_dashboard.png`, `sensor_dashboard.png` |
+| `--combined` | off | render one set across every session into `<output-dir>/full/` instead |
+| `--glob PATTERN` | `candump_*.csv` | filename glob, matched at any depth |
+| `--basemap`, `--basemap-offline`, `--tile-cache-dir` | as in `analyze_can_frames.py` | basemap controls |
+| `--timezone TZ` | (unset → elapsed `H:MM`) | IANA tz for a wall-clock x-axis, e.g. `America/Los_Angeles` for PDT/PST |
+
+Render every session's dashboards:
+
+```bash
+python3 build_physical_dashboard.py
+# -> outputs/25Nov8_owt/physical_dashboard.png, …/electrical_dashboard.png, …
+```
+
+One session, one dashboard:
+
+```bash
+python3 build_physical_dashboard.py \
+  --data-dir data/26May23_owt \
+  --config-key sensor_dashboard.png
+# -> outputs/26May23_owt/sensor_dashboard.png
+```
+
+Everything on one global time axis (`_full` suffix, written to `outputs/full/`):
+
+```bash
+python3 build_physical_dashboard.py --combined
+```
+
+Note that `--combined` spans months once several sessions exist, so the time-series
+panels stretch across the gaps between tests and their x-axis switches from `h:mm`
+to elapsed days. The per-session default is the readable view.
+
 ## Outputs
 
-By default the script writes to `outputs/`:
+Everything lands under `outputs/`.
+
+`analyze_can_frames.py` (single candump) writes to the `--outdir` root:
 
 - `parsed_frames.csv`: one row per frame, including CAN ID, DLC, payload bytes, and parse warnings.
 - `decoded_signals.csv`: one row per decoded signal value.
@@ -62,6 +208,16 @@ By default the script writes to `outputs/`:
 - `on_water/physical_dashboard_trimmed.png`: on-water-only physical/navigation dashboard.
 - `on_water/electrical_dashboard_trimmed.png`: on-water-only electrical/power dashboard.
 - `on_water/sensor_dashboard_trimmed.png`: on-water-only wind + data sensor dashboard.
+
+`decode_all_candumps.py` and `build_physical_dashboard.py` write one folder per
+session, `outputs/<session>/`:
+
+- `decoded_signals.csv`: every decoded signal from that session's candumps.
+- `physical_dashboard.png`, `electrical_dashboard.png`, `sensor_dashboard.png`:
+  that session's dashboards, all its candumps on one clock.
+
+`build_physical_dashboard.py --combined` writes the all-sessions versions to
+`outputs/full/` with a `_full` suffix.
 
 ### Basemap (Satellite Imagery)
 
@@ -83,7 +239,7 @@ Dashboard grouping is controlled in `polaris_can_analysis/config.py` via
 
 - Keys are output PNG names.
 - `title` sets the figure title.
-- `panels` is a list of panel keys (for example `frame_counts`, `can_utilization`, `rudder`, `geo`, `geo_gps_scaled`, `pdb_voltages`, `battery_temps`, `wind_angle_split`, `wind_speed_split`, `sensor_temp`, `sensor_ph`, `sensor_cond`).
+- `panels` is a list of panel keys: `frame_counts`, `can_utilization`, `rudder`, `imu`, `geo`, `geo_gps_scaled`, `geo_imagery`, `geo_gps_scaled_imagery`, `pdb_voltages`, `battery_temps`, `wind_angle_split`, `wind_speed_split`, `sensor_temp`, `sensor_ph`, `sensor_cond`.
 
 Edit this map to quickly choose which graphs appear on which PNG.
 
@@ -91,6 +247,7 @@ Edit this map to quickly choose which graphs appear on which PNG.
 
 - Main/control: `0x001`, `0x002`
 - Wind: `0x040`, `0x041`
+- Rudder data: `0x050`
 - AIS/GPS: `0x060`, `0x070`
 - Sensors: `0x100`, `0x110`, `0x120`
 - Heartbeats: `0x130`, `0x131`, `0x132`, `0x133`

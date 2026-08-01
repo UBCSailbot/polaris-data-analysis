@@ -3,13 +3,15 @@ from __future__ import annotations
 import math
 from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.collections import LineCollection
-from matplotlib.ticker import FuncFormatter
+from matplotlib.ticker import FixedLocator, FuncFormatter, MultipleLocator
 
 from polaris_can_analysis.analytics import (
     break_wrapped_angle_series,
@@ -933,6 +935,114 @@ TIME_AXIS_PANEL_KEYS = {
 }
 
 
+def format_elapsed_hm(seconds: float, _pos: object = None) -> str:
+    """Format an elapsed-seconds tick value as ``H:MM`` (e.g. 5400 -> ``1:30``)."""
+    total_minutes = int(round(float(seconds) / 60.0))
+    sign = "-" if total_minutes < 0 else ""
+    hours, minutes = divmod(abs(total_minutes), 60)
+    return f"{sign}{hours}:{minutes:02d}"
+
+
+ELAPSED_HM_LABEL = "Elapsed Time (h:mm)"
+ELAPSED_DAYS_LABEL = "Elapsed Time (days)"
+
+_DAY_S = 86400.0
+
+# Combining sessions from different on-water tests spans months, not hours.
+# Past this span, h:mm labels are unreadable and we switch to days/dates.
+LONG_SPAN_S = 2 * _DAY_S
+
+# Tick spacings (seconds) that land on round minute/hour/day boundaries.
+_NICE_TIME_STEPS_S = (
+    30,
+    60,
+    120,
+    300,
+    600,
+    900,
+    1800,
+    3600,
+    7200,
+    10800,
+    14400,
+    21600,
+    43200,
+    86400,
+    172800,
+    604800,
+    1209600,
+    2592000,
+    7776000,
+)
+
+
+def format_elapsed_days(seconds: float, _pos: object = None) -> str:
+    """Format an elapsed-seconds tick value as days (e.g. 2592000 -> ``30d``)."""
+    return f"{float(seconds) / _DAY_S:g}d"
+
+
+def elapsed_axis(span_s: float):
+    """Return the ``(formatter, label)`` suited to the elapsed span being plotted."""
+    if span_s > LONG_SPAN_S:
+        return format_elapsed_days, ELAPSED_DAYS_LABEL
+    return format_elapsed_hm, ELAPSED_HM_LABEL
+
+
+def choose_time_tick_step(span_s: float, target_ticks: int = 8) -> float:
+    """Pick a round time interval so a span shows roughly ``target_ticks`` ticks."""
+    for step in _NICE_TIME_STEPS_S:
+        if span_s / step <= target_ticks:
+            return float(step)
+    return float(_NICE_TIME_STEPS_S[-1])
+
+
+def make_walltime_formatter(
+    time_origin: datetime, display_tz: ZoneInfo, span_s: float = 0.0
+):
+    """Formatter mapping an elapsed-seconds tick to wall-clock time.
+
+    ``time_origin`` is the absolute (tz-aware) instant for elapsed == 0. Spans
+    covering more than a couple of days get dated labels, since every tick would
+    otherwise read ``00:00``.
+    """
+    pattern = "%b %d" if span_s > LONG_SPAN_S else "%H:%M"
+
+    def _fmt(seconds: float, _pos: object = None) -> str:
+        moment = (time_origin + timedelta(seconds=float(seconds))).astimezone(display_tz)
+        return moment.strftime(pattern)
+
+    return _fmt
+
+
+def walltime_label(time_origin: datetime, display_tz: ZoneInfo) -> str:
+    """X-axis label including the zone abbreviation, e.g. ``Time (PDT)``."""
+    name = time_origin.astimezone(display_tz).tzname() or str(display_tz)
+    return f"Time ({name})"
+
+
+def walltime_tick_positions(
+    time_origin: datetime,
+    display_tz: ZoneInfo,
+    t_min: float,
+    t_max: float,
+    target_ticks: int = 8,
+) -> List[float]:
+    """Elapsed-second positions whose wall-clock times fall on round boundaries."""
+    step = choose_time_tick_step(t_max - t_min, target_ticks)
+    start_local = (time_origin + timedelta(seconds=t_min)).astimezone(display_tz)
+    end_local = (time_origin + timedelta(seconds=t_max)).astimezone(display_tz)
+    midnight = start_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    secs_since_midnight = (start_local - midnight).total_seconds()
+    first = midnight + timedelta(seconds=math.ceil(secs_since_midnight / step) * step)
+
+    positions: List[float] = []
+    tick = first
+    while tick <= end_local:
+        positions.append((tick - time_origin).total_seconds())
+        tick = tick + timedelta(seconds=step)
+    return positions
+
+
 def elapsed_time_bounds(frames: List[ParsedFrame]) -> Optional[Tuple[float, float]]:
     times = [float(frame.elapsed_s) for frame in frames if math.isfinite(frame.elapsed_s)]
     if not times:
@@ -977,6 +1087,8 @@ def create_dashboard(
     show_on_water_marker: bool = False,
     subtitle_extra: str = "",
     time_margin_frac: float = 0.0,
+    time_origin: Optional[datetime] = None,
+    display_tz: Optional[ZoneInfo] = None,
 ) -> None:
     panel_count = len(panels)
     if panel_count == 0:
@@ -1026,8 +1138,32 @@ def create_dashboard(
             annotate_no_data(ax, "Unknown panel key")
             continue
         drawer(fig, ax, frames, decoded_rows)
-        if panel_key in TIME_AXIS_PANEL_KEYS and time_bounds is not None:
-            ax.set_xlim(*time_bounds)
+        if panel_key in TIME_AXIS_PANEL_KEYS:
+            wall_clock = time_origin is not None and display_tz is not None
+            time_span = (
+                time_bounds[1] - time_bounds[0] if time_bounds is not None else 0.0
+            )
+            if wall_clock:
+                ax.xaxis.set_major_formatter(
+                    FuncFormatter(
+                        make_walltime_formatter(time_origin, display_tz, time_span)
+                    )
+                )
+                ax.set_xlabel(walltime_label(time_origin, display_tz))
+            else:
+                formatter, label = elapsed_axis(time_span)
+                ax.xaxis.set_major_formatter(FuncFormatter(formatter))
+                ax.set_xlabel(label)
+            if time_bounds is not None:
+                ax.set_xlim(*time_bounds)
+                if wall_clock:
+                    ticks = walltime_tick_positions(
+                        time_origin, display_tz, time_bounds[0], time_bounds[1]
+                    )
+                    ax.xaxis.set_major_locator(FixedLocator(ticks))
+                else:
+                    step = choose_time_tick_step(time_bounds[1] - time_bounds[0])
+                    ax.xaxis.set_major_locator(MultipleLocator(step))
         if (
             show_on_water_marker
             and on_water_start_s is not None
