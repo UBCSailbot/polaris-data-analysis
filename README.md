@@ -20,6 +20,7 @@ This repo now includes parser + visualization tooling for CAN dumps:
 - Top-level CLI scripts:
   - `analyze_can_frames.py` — parse and decode a single candump, write per-file dashboards
   - `decode_all_candumps.py` — decode each session into `outputs/<session>/decoded_signals.csv`
+  - `combine_session_logs.py` — merge each session's candumps into `outputs/<session>/combined_can_frames.csv`
   - `build_physical_dashboard.py` — render each session's dashboards into `outputs/<session>/`
 - Package modules: `polaris_can_analysis/`
 - Input CSV format: `Timestamp,Elapsed_Time_s,CAN_Message`
@@ -45,12 +46,14 @@ on a single test. Files are ordered by filename, which is chronological given
 the `candump_YYYYMMDD_HHMMSS.csv` naming; `tile_cache/` is always skipped, and
 empty session folders are simply ignored.
 
-`decode_all_candumps.py` and `build_physical_dashboard.py` mirror this layout
-into `outputs/`, one folder per session:
+`decode_all_candumps.py`, `combine_session_logs.py`, and
+`build_physical_dashboard.py` mirror this layout into `outputs/`, one folder per
+session:
 
 ```
 outputs/
   25Nov8_owt/decoded_signals.csv
+  25Nov8_owt/combined_can_frames.csv
   25Nov8_owt/physical_dashboard.png
   25Nov8_owt/electrical_dashboard.png
   25Nov8_owt/sensor_dashboard.png
@@ -141,6 +144,59 @@ python3 decode_all_candumps.py --data-dir data/26May23_owt
 # -> outputs/26May23_owt/decoded_signals.csv
 ```
 
+### `combine_session_logs.py` — one candump per session
+
+A session is captured as many candump files, each a slice of the same test.
+This merges all of them into a single `outputs/<session>/combined_can_frames.csv`
+ordered by the absolute `Timestamp`.
+
+The output keeps the candump schema verbatim — `Timestamp,Elapsed_Time_s,CAN_Message`
+— so it feeds straight back into `analyze_can_frames.py --input`. AIS is carried
+in the CAN frames themselves (ID `0x060`, `SAIL_AIS`) and so is included; the
+separate `ais_values_*.csv` files are already-decoded ship reports, not CAN
+frames, and are not merged.
+
+```bash
+python3 combine_session_logs.py [--data-dir DIR] [--output-dir DIR]
+                                [--filename NAME] [--glob PATTERN]
+```
+
+| Flag | Default | Purpose |
+| --- | --- | --- |
+| `--data-dir DIR` | `data` | root to search recursively (e.g. `data/26Jun6_owt` for one session) |
+| `--output-dir DIR` | `outputs` | root for the per-session output folders |
+| `--filename NAME` | `combined_can_frames.csv` | CSV name written inside each session folder |
+| `--glob PATTERN` | `candump_*.csv` | filename glob, matched at any depth |
+
+Combine every session:
+
+```bash
+python3 combine_session_logs.py
+# -> outputs/25Nov8_owt/combined_can_frames.csv, outputs/26Mar15_owt/…, …
+```
+
+Combine one session, then analyze it as a single candump:
+
+```bash
+python3 combine_session_logs.py --data-dir data/26May23_owt
+python3 analyze_can_frames.py --input outputs/26May23_owt/combined_can_frames.csv
+```
+
+Because each capture file is itself written chronologically, the merge streams
+the files rather than loading a session into memory, so multi-hundred-MB
+sessions combine in constant memory.
+
+Two caveats on the combined file:
+
+- `Elapsed_Time_s` is measured **per capture file**, so it restarts partway
+  through the combined output. `Timestamp` is the only session-wide ordering
+  key. (`build_physical_dashboard.py` solves the same problem by rebasing onto
+  one clock; this script deliberately passes the original column through
+  untouched.)
+- Truncated `CAN_Message` values that already exist in the source candumps are
+  passed through verbatim rather than dropped, matching the repo's tolerance of
+  partial real-world logs. The parser records them as `parse_warning`.
+
 ### `build_physical_dashboard.py` — dashboards per session
 
 Groups the candumps under `--data-dir` by session folder, rebases each session's
@@ -209,10 +265,13 @@ Everything lands under `outputs/`.
 - `on_water/electrical_dashboard_trimmed.png`: on-water-only electrical/power dashboard.
 - `on_water/sensor_dashboard_trimmed.png`: on-water-only wind + data sensor dashboard.
 
-`decode_all_candumps.py` and `build_physical_dashboard.py` write one folder per
-session, `outputs/<session>/`:
+`decode_all_candumps.py`, `combine_session_logs.py`, and
+`build_physical_dashboard.py` write one folder per session,
+`outputs/<session>/`:
 
 - `decoded_signals.csv`: every decoded signal from that session's candumps.
+- `combined_can_frames.csv`: that session's candumps merged into one
+  chronological CAN log, same three columns as the input candumps.
 - `physical_dashboard.png`, `electrical_dashboard.png`, `sensor_dashboard.png`:
   that session's dashboards, all its candumps on one clock.
 
