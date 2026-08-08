@@ -1,0 +1,1 @@
+Timestamp,Elapsed_Time_s,gps_lon,gps_lat,pH,Water_Temp,Salinity,Data_Wind_spd,Data_Wind_dir,Actual_rdr_deg,Set_rdr_deg,Speed_over_gnd,IMU_roll,IMU_pitch,IMU_integral,IMU_derivative,IMU_heading,Temp1,Temp2,Temp3,Volt1,Volt2,Volt3,Volt4,MPPT_curr_hull_port,MPPT_curr_sail_port,MPPT_curr_hull_star,MPPT_curr_sail_star

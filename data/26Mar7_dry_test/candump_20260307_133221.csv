@@ -1,0 +1,2 @@
+Timestamp,Elapsed_Time_s,CAN_Message
+2026-03-07T13:32:24.932186,2.985,[ERROR] [Errno None] Unable to connect to port 22 on 192.168.0.10

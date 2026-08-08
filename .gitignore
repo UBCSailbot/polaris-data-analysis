@@ -27,8 +27,6 @@ htmlcov/
 # Generated analysis outputs
 outputs/
 
-# CSV data/log files
-*.csv
 
 # Local/editor/system files
 .DS_Store
